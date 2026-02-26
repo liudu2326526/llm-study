@@ -1,13 +1,11 @@
 # 大模型微调实践
 ## 目录
-1. LangChain 定义与框架
-2. LangChain 核心价值
-3. LangChain 核心组件
-4. 基于本地大模型的 Agent 搭建
-5. 大模型微调基础（LLM fine-tuning basics）
-6. 大模型 PEFT 技术（LLM PEFT technology）
-7. 大模型全参数微调核心技术（LLM full parameter fine-tuning core technology）
-8. 大模型微调核心代码实现（LLM fine-tuning core code implementation）
+1. [LangChain 定义与框架](#一、langchain-定义与框架)
+2. [LangChain 核心价值](#二、langchain-核心价值)
+3. [LangChain 核心组件](#三、langchain-核心组件)
+4. [基于本地大模型的 Agent 搭建](#四、基于本地大模型的-agent-搭建)
+
+---
 
 ## 一、LangChain 定义与框架
 ### 1. LangChain 定义
