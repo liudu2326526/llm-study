@@ -17,14 +17,22 @@ Transformer的核心在于其堆叠式的编码器−解码器架构与全局注
 - **核心作用**: 由于 Transformer 的自注意力机制（Self-Attention）是位置无关的（置换不变性），它无法感知序列中词汇的先后顺序。位置编码通过在 Embedding 中注入位置信息，使模型能够区分不同位置的词。
 - **实现方式**: 常用正余弦函数（Sinusoidal）生成固定编码，或使用可学习的位置向量。
 - **公式**:
-  $$ PE_{(pos, 2i)} = \sin(pos / 10000^{2i/d_{model}}) $$
-  $$ PE_{(pos, 2i+1)} = \cos(pos / 10000^{2i/d_{model}}) $$
+
+$$
+PE_{(pos, 2i)} = \sin(pos / 10000^{2i/d_{model}})
+$$
+$$
+PE_{(pos, 2i+1)} = \cos(pos / 10000^{2i/d_{model}})
+$$
 
 ### 3. Multi-Head Attention (多头自注意力)
 - **自注意力 (Self-Attention)**: 通过计算查询（Query）、键（Key）和值（Value）之间的关联度，让模型在处理当前词时，能够“关注”到序列中其他相关的词。
 - **多头机制 (Multi-Head)**: 将 Q、K、V 通过不同的线性变换投影到多个低维子空间（“头”），在每个子空间独立计算注意力，最后将结果拼接并再次线性变换。这使得模型能同时从不同的语义角度（如语法、逻辑、指代关系）捕捉信息。
 - **公式**:
-  $$ \text{Attention}(Q, K, V) = \text{softmax}\left(\frac{QK^T}{\sqrt{d_k}}\right)V $$
+
+$$
+\text{Attention}(Q, K, V) = \text{softmax}\left(\frac{QK^T}{\sqrt{d_k}}\right)V
+$$
 
 ### 4. Add & Norm (残差连接与层归一化)
 - **Add (残差连接)**: 借鉴 ResNet 思想，将子层（Attention 或 Feed Forward）的输入直接与其输出相加（$x + \text{Sublayer}(x)$）。这有助于缓解深层网络中的梯度消失问题，使训练更稳定。
@@ -33,7 +41,11 @@ Transformer的核心在于其堆叠式的编码器−解码器架构与全局注
 ### 5. Feed Forward (前馈神经网络)
 - **结构**: 每个位置独立经过一个两层的全连接网络（MLP），中间包含一个非线性激活函数（如 ReLU 或 GELU）。
 - **作用**: 提供非线性映射能力，对注意力机制提取的特征进行进一步的变换和抽象。
-- **公式**: $\text{FFN}(x) = \max(0, xW_1 + b_1)W_2 + b_2$。
+- **公式**:
+
+$$
+\text{FFN}(x) = \max(0, xW_1 + b_1)W_2 + b_2
+$$
 
 ### 6. Linear (线性层)
 - **作用**: 在解码器的顶层，通过一个全连接层将隐藏状态映射到词表大小（Vocabulary Size）的维度。每个维度的数值代表对应词的未归一化得分（Logits）。
