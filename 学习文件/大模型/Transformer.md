@@ -13,6 +13,20 @@ Transformer的核心在于其堆叠式的编码器−解码器架构与全局注
 - **Token Embedding**: 将输入的离散 Token（如单词或字符）映射为高维连续向量空间。通过学习到的权重矩阵，将每个 Token 转换为固定维度（如 $d_{model}=512$）的特征表示。
 - **Output Embedding**: 在解码阶段，将目标 Token 也转换为向量表示，以便与编码器的输出进行交互。
 
+#### 1.1 分词算法变体 (Tokenization)
+- **BPE (Byte Pair Encoding)**: 通过合并高频字节对实现子词切分。
+  - **应用**: GPT 系列、LLaMA、Baichuan。
+- **WordPiece**: 类似于 BPE，但基于似然度选择合并项。
+  - **应用**: BERT。
+- **Unigram**: 基于概率语言模型。
+  - **应用**: T5、XLNet。
+
+#### 1.2 词表与权重变体
+- **Tie Embedding**: 共享输入与输出层的 Embedding 权重，减少模型参数量。
+  - **应用**: GPT-2、PaLM。
+- **Scaling**: 在 Embedding 后乘以 $\sqrt{d_{model}}$。
+  - **应用**: 原始 Transformer。
+
 ### 2. Positional Encoding (位置编码)
 - **核心作用**: 由于 Transformer 的自注意力机制（Self-Attention）是位置无关的（置换不变性），它无法感知序列中词汇的先后顺序。位置编码通过在 Embedding 中注入位置信息，使模型能够区分不同位置的词。
 
@@ -75,14 +89,42 @@ $$
 - **Add (残差连接)**: 借鉴 ResNet 思想，将子层（Attention 或 Feed Forward）的输入直接与其输出相加（$x + \text{Sublayer}(x)$）。这有助于缓解深层网络中的梯度消失问题，使训练更稳定。
 - **Norm (层归一化)**: 在每一层之后进行 Layer Normalization，将神经元的激活值归一化到均值为 0、方差为 1 的分布，加速模型收敛。
 
+#### 4.1 归一化变体 (Normalization Variants)
+- **LayerNorm (LN)**: 标准的层归一化。
+- **RMSNorm (Root Mean Square Layer Normalization)**: 只做缩放不做平移，计算开销更小。
+  - **应用**: LLaMA 系列、DeepSeek、Gemma。
+- **DeepNorm**: 一种特殊的初始化和归一化策略，允许训练极深（如 1000 层）的 Transformer。
+  - **应用**: GLM-130B。
+
+#### 4.2 归一化位置 (Normalization Position)
+- **Post-LN**: Norm 放在残差连接之后。容易导致梯度爆炸，训练不稳定，但性能可能略优。
+  - **应用**: 原始 Transformer、BERT。
+- **Pre-LN**: Norm 放在子层之前。训练极其稳定，是大模型的标准配置。
+  - **应用**: GPT-2、LLaMA、Baichuan。
+- **Sandwich-LN**: 在 Pre-LN 基础上，在子层输出后再加一层 LN，防止值溢出。
+  - **应用**: CogView。
+
 ### 5. Feed Forward (前馈神经网络)
-- **结构**: 每个位置独立经过一个两层的全连接网络（MLP），中间包含一个非线性激活函数（如 ReLU 或 GELU）。
+- **结构**: 每个位置独立经过一个两层的全连接网络（MLP），中间包含一个非线性激活函数。
 - **作用**: 提供非线性映射能力，对注意力机制提取的特征进行进一步的变换和抽象。
 - **公式**:
 
 $$
 \text{FFN}(x) = \max(0, xW_1 + b_1)W_2 + b_2
 $$
+
+#### 5.1 激活函数变体 (Activation Variants)
+- **ReLU**: 原始 Transformer 使用。
+- **GELU (Gaussian Error Linear Unit)**: 平滑版的 ReLU，在零点附近具有非零梯度。
+  - **应用**: BERT、GPT 系列。
+- **SwiGLU**: GLU (Gated Linear Unit) 的变体，使用 Swish 激活函数。显著提升模型表现。
+  - **应用**: LLaMA、PaLM、Baichuan。
+
+#### 5.2 架构变体 (Architecture Variants)
+- **Standard FFN**: 两层全连接。
+- **MoE (Mixture of Experts)**: 将 FFN 替换为多个专家网络，通过路由（Router）选择部分专家激活。
+  - **优点**: 极大增加模型参数量的同时，保持较低的推理计算量。
+  - **代表模型**: GPT-4 (据传)、Mixtral、DeepSeek-V3。
 
 ### 6. Linear (线性层)
 - **作用**: 在解码器的顶层，通过一个全连接层将隐藏状态映射到词表大小（Vocabulary Size）的维度。每个维度的数值代表对应词的未归一化得分（Logits）。
