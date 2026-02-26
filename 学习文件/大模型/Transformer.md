@@ -137,11 +137,15 @@ $$
 - **Norm (层归一化)**: 在每一层之后进行 Layer Normalization，将神经元的激活值归一化到均值为 0、方差为 1 的分布，加速模型收敛。
 
 #### 4.1 归一化变体 (Normalization Variants)
-- **LayerNorm (LN)**: 标准的层归一化。
-- **RMSNorm (Root Mean Square Layer Normalization)**: 只做缩放不做平移，计算开销更小。
-  - **应用**: LLaMA 系列、DeepSeek、Gemma。
-- **DeepNorm**: 一种特殊的初始化和归一化策略，允许训练极深（如 1000 层）的 Transformer。
-  - **应用**: GLM-130B。
+- **LayerNorm (LN)**：标准层归一化。在每层对所有神经元的输出进行规范化。在处理序列数据等不适合批处理的情况下，可以作为替代方案使用。
+- **RMSNorm (Root Mean Square Layer Normalization)**：只做缩放不做平移，计算开销更小。
+  - **应用**：LLaMA 系列、DeepSeek、Gemma。
+- **DeepNorm**：一种特殊的初始化和归一化策略，允许训练极深（如 1000 层）的 Transformer。
+  - **应用**：GLM-130B。
+- **Batch Normalization (BN)**：批归一化。通过在每个批次中对输入数据进行规范化，加速网络收敛，降低对初始化和学习率的敏感性，具有一定的正则化效果。
+- **Group Normalization (GN)**：组归一化。介于 BN 和 LN 之间的方法，将输入数据分成多个小组并对组内进行归一化，提高网络学习能力。
+
+![Different Normalization](../resource/different_Normalization.webp)
 
 #### 4.2 归一化位置 (Normalization Position)
 - **Post-LN**: Norm 放在残差连接之后。容易导致梯度爆炸，训练不稳定，但性能可能略优。
@@ -172,6 +176,28 @@ $$
 - **MoE (Mixture of Experts)**: 将 FFN 替换为多个专家网络，通过路由（Router）选择部分专家激活。
   - **优点**: 极大增加模型参数量的同时，保持较低的推理计算量。
   - **代表模型**: GPT-4 (据传)、Mixtral、DeepSeek-V3。
+
+##### 5.2.1 MoE 核心组件
+混合专家模型主要由两个关键部分组成：
+- **稀疏 MoE 层 (Sparse MoE Layer)**：这些层代替了传统 Transformer 模型中的前馈网络 (FFN) 层。MoE 层包含若干“专家”(Experts，例如 8 个)，每个专家本身是一个独立的神经网络（通常也是 FFN）。
+- **门控网络或路由 (Gating Network / Router)**：决定哪些词元 (Token) 被分发到哪个专家。
+  - 例如：“More” 令牌可能被发送到 Expert 2，而 “Parameters” 词元被发送到 Expert 1。
+  - 一个词元有时可以分发给多个专家制。路由方式是 MoE 的核心，路由器由可学习参数组成，与网络其他部分同步预训练。
+
+![MoE Router](../resource/MOE_Architecture.png)
+
+##### 5.2.2 MoE 的优缺点
+**优点：**
+- **降低推理耗时**：
+  - 在 Transformer 的推理过程中，FFN 的权重维度较大 ($d_{model} \times d_{ff}$)，耗时占比高。
+  - MoE 虽然总参数量更多，但推理时仅激活少数专家，因此实际计算量（FLOPs）远小于同等规模的稠密模型。
+- **参数量扩展性**：可以在不增加计算成本的前提下，通过增加专家数量来极大提升模型的知识容量。
+
+**缺点：**
+- **显存占用大**：需要提前加载所有专家的参数，对显存容量要求极高。
+- **训练/微调困难**：稀疏模型（Sparse Model）更容易过拟合，且路由器的负载均衡（Load Balancing）难以优化。
+- **目前尚不成熟**：在微调（Fine-tuning）阶段的稳定性不如稠密模型。
+
 
 ### 6. Linear (线性层)
 - **作用**: 在解码器的顶层，通过一个全连接层将隐藏状态映射到词表大小（Vocabulary Size）的维度。每个维度的数值代表对应词的未归一化得分（Logits）。
