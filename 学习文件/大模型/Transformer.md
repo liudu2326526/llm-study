@@ -38,6 +38,25 @@ Transformer的核心在于其堆叠式的编码器−解码器架构与全局注
 - **Scaling**: 在 Embedding 后乘以 $\sqrt{d_{model}}$。
   - **应用**: 原始 Transformer。
 
+#### 1.3 中文向量化策略 (Chinese Vectorization Strategies)
+针对中文特有的语言特性，常见的向量化（分词）策略包括：
+
+- **字级别 (Character-level)**: 将每个汉字作为一个 Token。
+  - **优点**: 词表小（几千个常用字），无 OOV 问题。
+  - **缺点**: 无法有效捕捉词组级别的语义信息。
+  - **应用**: BERT-base-chinese。
+- **词级别 (Word-level)**: 先使用分词工具（如 Jieba、HanLP）进行分词，再进行向量化。
+  - **优点**: 语义明确。
+  - **缺点**: 词表极其庞大，存在严重的 OOV 问题和分词歧义。
+- **子词级别 (Subword-level - 主流)**:
+  - **BBPE (Byte-level BPE)**: 直接在字节流上运行 BPE。
+    - **特点**: 通过将 UTF-8 编码的字节合并，可以表示任何字符（包括罕见字、Emoji、代码），彻底解决 OOV 问题。
+    - **应用**: GPT-3/4、LLaMA、DeepSeek。
+  - **SentencePiece**: 一种集成化的分词框架，支持 BPE 和 Unigram。
+    - **特点**: 不需要预分词，直接将原始文本（含空格）处理为子词序列，对中英文混合语料支持极佳。
+    - **应用**: LLaMA-chinese、Baichuan、ChatGLM 系列。
+- **中文字词兼顾策略**: 部分模型在词表中显式加入高频中文词汇（如“人工智能”），以提升中文处理效率和理解深度。
+
 ### 2. Positional Encoding (位置编码)
 - **核心作用**: 由于 Transformer 的自注意力机制（Self-Attention）是位置无关的（置换不变性），它无法感知序列中词汇的先后顺序。位置编码通过在 Embedding 中注入位置信息，使模型能够区分不同位置的词。
 
