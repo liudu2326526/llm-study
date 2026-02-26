@@ -43,14 +43,33 @@ $$
 - **核心思想**: 不考虑绝对坐标，只考虑词与词之间的相对距离（如 $i-j$）。
 - **代表模型**: T5 (使用可学习的相对位置偏置)。
 
-### 3. Multi-Head Attention (多头自注意力)
+### 3. Attention Mechanism (注意力机制)
 - **自注意力 (Self-Attention)**: 通过计算查询（Query）、键（Key）和值（Value）之间的关联度，让模型在处理当前词时，能够“关注”到序列中其他相关的词。
-- **多头机制 (Multi-Head)**: 将 Q、K、V 通过不同的线性变换投影到多个低维子空间（“头”），在每个子空间独立计算注意力，最后将结果拼接并再次线性变换。这使得模型能同时从不同的语义角度（如语法、逻辑、指代关系）捕捉信息。
 - **公式**:
 
 $$
 \text{Attention}(Q, K, V) = \text{softmax}\left(\frac{QK^T}{\sqrt{d_k}}\right)V
 $$
+
+#### 3.1 多头注意力变体 (Multi-Head Variants)
+为了平衡计算效率（尤其是推理时的 KV Cache 占用）与模型性能，演化出了以下变体：
+
+- **MHA (Multi-Head Attention)**: 每个 Query 头都有对应的 Key 和 Value 头。参数量大，但表达能力最强。
+- **MQA (Multi-Query Attention)**: 所有的 Query 头共享同一组 Key 和 Value 头。极大压缩了 KV Cache，提升了推理吞吐，但模型精度略有下降。
+  - **代表模型**: PaLM、Falcon、GPT-NeoX。
+- **GQA (Grouped-Query Attention)**: MHA 与 MQA 的折中方案。将 Query 头分组，每组共享一组 Key 和 Value 头。在保持接近 MHA 性能的同时，获得接近 MQA 的速度。
+  - **代表模型**: LLaMA-2 (70B)、LLaMA-3。
+- **MLA (Multi-head Latent Attention)**: 通过低秩投影对 KV 进行压缩和解压。显著降低了 KV Cache 的显存占用，同时保持了高性能。
+  - **代表模型**: DeepSeek-V3。
+
+#### 3.2 稀疏注意力 (Sparse Attention)
+旨在解决自注意力机制中 $O(L^2)$ 的复杂度问题，使其能处理更长的序列：
+
+- **Sliding Window Attention (滑窗注意力)**: 每个 Token 只关注其前后固定范围内的 Token。将复杂度降为 $O(L \times W)$。
+  - **代表模型**: Mistral、Longformer。
+- **Global + Sliding Window**: 在滑窗基础上，指定部分 Token（如 `[CLS]` 或特定关键词）具有全局视野，关注所有位置。
+- **BigBird / Longformer**: 结合了随机注意力、滑窗注意力和全局注意力，实现对超长序列的高效建模。
+- **FlashAttention**: 虽然不是算法层面的稀疏，但通过 IO 感知的显存优化，极大地提升了标准注意力的计算速度，是大模型训练的标配。
 
 ### 4. Add & Norm (残差连接与层归一化)
 - **Add (残差连接)**: 借鉴 ResNet 思想，将子层（Attention 或 Feed Forward）的输入直接与其输出相加（$x + \text{Sublayer}(x)$）。这有助于缓解深层网络中的梯度消失问题，使训练更稳定。
