@@ -10,7 +10,7 @@ Transformer的核心在于其堆叠式的编码器−解码器架构与全局注
 ## 核心组件介绍
 
 ### 1. Embedding (嵌入层)
-- **Token Embedding**: 将输入的离散 Token（如单词或字符）映射为高维连续向量空间。通过学习到的权重矩阵，将每个 Token 转换为固定维度（如 $d_{model}=512$）的特征表示。
+- **Token Embedding**: 将输入的离散 Token（如单词或字符）映射为高维连续向量空间。通过学习到的权重矩阵，将每个 Token 转换为固定维度（如 $d_{\text{model}}=512$）的特征表示。
 - **Output Embedding**: 在解码阶段，将目标 Token 也转换为向量表示，以便与编码器的输出进行交互。
 
 #### 1.1 分词算法变体 (Tokenization)
@@ -35,7 +35,7 @@ Transformer的核心在于其堆叠式的编码器−解码器架构与全局注
 #### 1.2 词表与权重变体
 - **Tie Embedding**: 共享输入与输出层的 Embedding 权重，减少模型参数量。
   - **应用**: GPT-2、PaLM。
-- **Scaling**: 在 Embedding 后乘以 $\sqrt{d_{model}}$。
+- **Scaling**: 在 Embedding 后乘以 $\sqrt{d_{\text{model}}}$。
   - **应用**: 原始 Transformer。
 
 #### 1.3 中文向量化策略 (Chinese Vectorization Strategies)
@@ -81,10 +81,10 @@ Transformer的核心在于其堆叠式的编码器−解码器架构与全局注
 - **Sinusoidal (正余弦编码)**: 原始 Transformer 采用的方法，使用不同频率的正余弦函数生成固定编码。优点是无需学习，且理论上具有一定的长度外推性。
 - **公式**:
 $$
-PE_{(pos, 2i)} = \sin(pos / 10000^{2i/d_{model}})
+PE_{(pos, 2i)} = \sin(pos / 10000^{2i/d_{\text{model}}})
 $$
 $$
-PE_{(pos, 2i+1)} = \cos(pos / 10000^{2i/d_{model}})
+PE_{(pos, 2i+1)} = \cos(pos / 10000^{2i/d_{\text{model}}})
 $$
 - **Learned (可学习编码)**: 为每个位置（如 0-511）分配一个可学习的向量（如 BERT、GPT-2）。缺点是无法处理超过训练时最大长度的序列。
 
@@ -146,10 +146,10 @@ $$
 - **核心思想：缓存不变项**
   关键观察：**历史 Token 的 K 和 V 在生成后续 Token 时是不会改变的**。
   因此可以将其缓存：
-  - **K_cache** = $[K_1, K_2, \dots, K_{n-1}]$
-  - **V_cache** = $[V_1, V_2, \dots, V_{n-1}]$
-  生成新 Token 时，只需计算当前 Token 的 $Q_{new}$，然后与缓存进行计算：
-  $\text{Attention}(Q_{new}, \text{K\_cache}, \text{V\_cache})$。
+  - **K-cache** = $[K_1, K_2, \dots, K_{n-1}]$
+  - **V-cache** = $[V_1, V_2, \dots, V_{n-1}]$
+  生成新 Token 时，只需计算当前 Token 的 $Q_{\text{new}}$，然后与缓存进行计算：
+  $\text{Attention}(Q_{\text{new}}, \text{K}_{\text{cache}}, \text{V}_{\text{cache}})$。
 
 - **性能提升：$O(n^2) \to O(n)$**
   - **无 KV Cache**：每一步重算全部 Token，复杂度 $O(n^2)$。
@@ -158,7 +158,7 @@ $$
 
 - **显存挑战 (The Memory Wall)**
   虽然快，但 KV Cache 极度消耗显存。缓存大小计算公式：
-  $$\text{Size} \approx 2 \times \text{layers} \times \text{tokens} \times \text{hidden\_dim} \times \text{precision\_bytes}$$
+  $$\text{Size} \approx 2 \times \text{layers} \times \text{tokens} \times \text{hidden}_{\text{dim}} \times \text{precision}_{\text{bytes}}$$
   例如一个 7B 模型（4096 上下文），KV Cache 可能占用 3GB - 5GB 显存。
   **工程优化方案**：
   - **Paged KV Cache (vLLM)**：解决显存碎片。
@@ -226,7 +226,7 @@ $$
 ##### 5.2.2 MoE 的优缺点
 **优点：**
 - **降低推理耗时**：
-  - 在 Transformer 的推理过程中，FFN 的权重维度较大 ($d_{model} \times d_{ff}$)，耗时占比高。
+  - 在 Transformer 的推理过程中，FFN 的权重维度较大 ($d_{\text{model}} \times d_{\text{ff}}$)，耗时占比高。
   - MoE 虽然总参数量更多，但推理时仅激活少数专家，因此实际计算量（FLOPs）远小于同等规模的稠密模型。
 - **参数量扩展性**：可以在不增加计算成本的前提下，通过增加专家数量来极大提升模型的知识容量。
 
