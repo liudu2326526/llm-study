@@ -10,7 +10,7 @@ Transformer的核心在于其堆叠式的编码器−解码器架构与全局注
 ## 核心组件介绍
 
 ### 1. Embedding (嵌入层)
-- **Token Embedding**: 将输入的离散 Token（如单词或字符）映射为高维连续向量空间。通过学习到的权重矩阵，将每个 Token 转换为固定维度（如 $d_{\text{model}}=512$）的特征表示。
+- **Token Embedding**: 将输入的离散 Token（如单词或字符）映射为高维连续向量空间。通过学习到的权重矩阵，将每个 Token 转换为固定维度（如 $`d_{\text{model}}=512`$）的特征表示。
 - **Output Embedding**: 在解码阶段，将目标 Token 也转换为向量表示，以便与编码器的输出进行交互。
 
 #### 1.1 分词算法变体 (Tokenization)
@@ -35,7 +35,7 @@ Transformer的核心在于其堆叠式的编码器−解码器架构与全局注
 #### 1.2 词表与权重变体
 - **Tie Embedding**: 共享输入与输出层的 Embedding 权重，减少模型参数量。
   - **应用**: GPT-2、PaLM。
-- **Scaling**: 在 Embedding 后乘以 $\sqrt{d_{\text{model}}}$。
+- **Scaling**: 在 Embedding 后乘以 $`\sqrt{d_{\text{model}}}`$。
   - **应用**: 原始 Transformer。
 
 #### 1.3 中文向量化策略 (Chinese Vectorization Strategies)
@@ -75,7 +75,8 @@ Transformer的核心在于其堆叠式的编码器−解码器架构与全局注
   - **HuggingFace Tokenizers**: 支持多种主流开源模型的分词计算。
 
 ### 2. Positional Encoding (位置编码)
-- **核心作用**: 由于 Transformer 的自注意力机制（Self-Attention）是位置无关的（置换不变性），它无法感知序列中词汇的先后顺序。位置编码通过在 Embedding 中注入位置信息，使模型能够区分不同位置的词。
+#### 2.1 为什么需要位置编码？
+Transformer 的注意力机制对序列顺序不敏感（Permutation Invariant）。如果不加位置编码，模型会将 "I love machine" 和 "machine love I" 视为完全相同。
 
 #### 2.1 绝对位置编码 (Absolute PE)
 - **Sinusoidal (正余弦编码)**: 原始 Transformer 采用的方法，使用不同频率的正余弦函数生成固定编码。优点是无需学习，且理论上具有一定的长度外推性。
@@ -148,8 +149,8 @@ $$
   因此可以将其缓存：
   - **K-cache** = $[K_1, K_2, \dots, K_{n-1}]$
   - **V-cache** = $[V_1, V_2, \dots, V_{n-1}]$
-  生成新 Token 时，只需计算当前 Token 的 $Q_{\text{new}}$，然后与缓存进行计算：
-  $\text{Attention}(Q_{\text{new}}, \text{K}_{\text{cache}}, \text{V}_{\text{cache}})$。
+  生成新 Token 时，只需计算当前 Token 的 $`Q_{\text{new}}`$，然后与缓存进行计算：
+  $`\text{Attention}(Q_{\text{new}}, \text{K}_{\text{cache}}, \text{V}_{\text{cache}})`$。
 
 - **性能提升：$O(n^2) \to O(n)$**
   - **无 KV Cache**：每一步重算全部 Token，复杂度 $O(n^2)$。
@@ -226,8 +227,8 @@ $$
 ##### 5.2.2 MoE 的优缺点
 **优点：**
 - **降低推理耗时**：
-  - 在 Transformer 的推理过程中，FFN 的权重维度较大 ($d_{\text{model}} \times d_{\text{ff}}$)，耗时占比高。
-  - MoE 虽然总参数量更多，但推理时仅激活少数专家，因此实际计算量（FLOPs）远小于同等规模的稠密模型。
+    - 在 Transformer 的推理过程中，FFN 的权重维度较大 ($`d_{\text{model}} \times d_{\text{ff}}`$)，耗时占比高。
+    - MoE 虽然总参数量更多，但推理时仅激活少数专家，因此实际计算量（FLOPs）远小于同等规模的稠密模型。
 - **参数量扩展性**：可以在不增加计算成本的前提下，通过增加专家数量来极大提升模型的知识容量。
 
 **缺点：**
@@ -410,7 +411,7 @@ Top-K 采样通过将采样池限制在概率最大的 $K$ 个词中，并重新
 ## 5. Top-p (核) 采样 (Nucleus Sampling)
 Top-p 采样解决了固定 $K$ 的问题。它根据累积概率动态选择采样池：
 1.  将词按概率降序排列。
-2.  选取最小的集合 $V_{\text{top-p}}$，使得其累积概率和 $\ge p$。
+2.  选取最小的集合 $`V_{\text{top-p}}`$，使得其累积概率和 $\ge p$。
 
 ### 动态采样池对比
 假设 $p=0.92$：
