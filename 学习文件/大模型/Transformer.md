@@ -132,6 +132,43 @@ $$
 - **BigBird / Longformer**: 结合了随机注意力、滑窗注意力和全局注意力，实现对超长序列的高效建模。
 - **FlashAttention**: 虽然不是算法层面的稀疏，但通过 IO 感知的显存优化，极大地提升了标准注意力的计算速度，是大模型训练的标配。
 
+#### 3.3 KV Cache (键值缓存)
+**一句话理解**：KV Cache 是将 Transformer 历史 Token 的 Key 和 Value 缓存起来，避免每次生成新 Token 时重复计算，是 LLM 推理最重要的优化技术。
+
+- **为什么需要 KV Cache？**
+  LLM 推理本质是**自回归生成 (Next-token prediction)**。
+  例如生成 "I love machine learning"：
+  1. `I` -> `love`
+  2. `I love` -> `machine`
+  3. `I love machine` -> `learning`
+  每生成一个新 Token，模型都要执行一次完整的 Forward 过程。在计算 Attention ($QK^T$)V 时，若无缓存，生成第 $n$ 个 Token 需要重新计算前 $n-1$ 个 Token 的 K 和 V。这导致计算量随序列长度呈平方级增长 ($O(n^2)$)。
+
+- **核心思想：缓存不变项**
+  关键观察：**历史 Token 的 K 和 V 在生成后续 Token 时是不会改变的**。
+  因此可以将其缓存：
+  - **K_cache** = $[K_1, K_2, \dots, K_{n-1}]$
+  - **V_cache** = $[V_1, V_2, \dots, V_{n-1}]$
+  生成新 Token 时，只需计算当前 Token 的 $Q_{new}$，然后与缓存进行计算：
+  $\text{Attention}(Q_{new}, \text{K\_cache}, \text{V\_cache})$。
+
+- **性能提升：$O(n^2) \to O(n)$**
+  - **无 KV Cache**：每一步重算全部 Token，复杂度 $O(n^2)$。
+  - **有 KV Cache**：每一步只算当前 Token，复杂度降为 $O(n)$。
+  这极大提升了推理速度，是所有主流框架（如 OpenAI, vLLM）的标配。
+
+- **显存挑战 (The Memory Wall)**
+  虽然快，但 KV Cache 极度消耗显存。缓存大小计算公式：
+  $$\text{Size} \approx 2 \times \text{layers} \times \text{tokens} \times \text{hidden\_dim} \times \text{precision\_bytes}$$
+  例如一个 7B 模型（4096 上下文），KV Cache 可能占用 3GB - 5GB 显存。
+  **工程优化方案**：
+  - **Paged KV Cache (vLLM)**：解决显存碎片。
+  - **量化 (KV Cache Quantization)**：如使用 FP8/INT8 存储。
+  - **Prefix Cache**：共享公共前缀缓存。
+
+- **直观类比：做数学题的草稿纸**
+  - **无草稿纸**：每算下一步都要重新推导前面所有的步骤。
+  - **有草稿纸**：只需在前面已有的结果上继续往下算，保存了历史计算成果。
+
 ### 4. Add & Norm (残差连接与层归一化)
 - **Add (残差连接)**: 借鉴 ResNet 思想，将子层（Attention 或 Feed Forward）的输入直接与其输出相加（$x + \text{Sublayer}(x)$）。这有助于缓解深层网络中的梯度消失问题，使训练更稳定。
 - **Norm (层归一化)**: 在每一层之后进行 Layer Normalization，将神经元的激活值归一化到均值为 0、方差为 1 的分布，加速模型收敛。
@@ -206,3 +243,307 @@ $$
 - **作用**: 将 Linear 层的输出 Logits 转换为概率分布。通过指数运算使得分高的词概率更大，且所有词的概率之和为 1，从而选出概率最高的词作为预测结果。
 
 
+# 大模型生成参数配置
+目前主流的大型语言模型 (LLM) 在生成文本时，主要采用以下四种解码策略：**贪心搜索 (Greedy search)**、**波束搜索 (Beam search)**、**Top-K 采样 (Top-K sampling)** 以及 **Top-p 采样 (Top-p sampling)**。
+
+## 1. 贪心搜索 (Greedy Search)
+贪心搜索在每个时间步 $t$ 都简单地选择概率最高的 Token 作为当前输出：
+$$w_{t} = \text{argmax}_{w} P(w | w_{1:t-1})$$
+
+| 初始词 | 第一步候选及概率 | 第二步候选及概率 |
+| :--- | :--- | :--- |
+| **The** | nice (0.5)、dog (0.3)、car (0.1) | is (0.4)、drives (0.5)、turns (0.2)<br>has (0.9)、and (0.05)、runs (0.05)<br>woman (0.4)、house (0.3)、guy (0.3) |
+
+![Greedy search](../resource/greedy_search.png)
+
+从单词 **The** 开始，算法在第一步贪心地选择条件概率最高的词 **nice** 作为输出，依此类推。最终生成的序列为 `(The, nice, woman)`，其联合概率为 $0.5 \times 0.4 = 0.2$。
+
+使用 `transformers` 库进行贪心搜索的示例如下（默认配置）：
+
+```python
+import tensorflow as tf
+from transformers import GPT2LMHeadModel, GPT2Tokenizer
+
+tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+model = GPT2LMHeadModel.from_pretrained("gpt2", pad_token_id=tokenizer.eos_token_id)
+
+# 编码上下文
+input_ids = tokenizer.encode('I enjoy walking with my cute dog', return_tensors='tf')
+
+# 生成文本，直到长度达到 50
+greedy_output = model.generate(input_ids, max_length=50)
+
+print("Output:\n" + 100 * '-')
+print(tokenizer.decode(greedy_output[0], skip_special_tokens=True))
+```
+
+**Output**:
+```text
+I enjoy walking with my cute dog, but I'm not sure if I'll ever be able to 
+walk with my dog. I'm not sure if I'll ever be able to walk with my dog.
+I'm not sure if I'll
+```
+
+**缺点分析**：
+贪心搜索的主要问题是容易陷入局部最优，错过隐藏在低概率词后面的高概率词。例如：在 $t=1$ 时，虽然 **dog** (0.3) 低于 **nice** (0.5)，但 **dog** 之后的 **has** 概率极高 (0.9)，其序列 `(The, dog, has)` 的联合概率为 $0.3 \times 0.9 = 0.27$，优于贪心搜索的结果 (0.2)。此外，贪心搜索极易导致生成的文本出现循环重复。
+
+## 2. 波束搜索 (Beam Search)
+波束搜索通过在每个时间步保留最可能的 `num_beams` 个词（假设为 2），从而降低丢失高概率序列的风险：
+
+| 初始词 | 分支 1 (概率) | 分支 2 (概率) | 最终选择 |
+| :--- | :--- | :--- | :--- |
+| **The** | nice (0.5) → woman (0.4) | dog (0.3) → has (0.9) | **(The, dog, has)** |
+| **序列概率** | 0.2 | **0.36** | (更优序列) |
+
+在时间步 1，波束搜索同时跟踪 `(The, nice)` 和 `(The, dog)`。到时间步 2，它发现序列 `(The, dog, has)` 的联合概率 (0.36) 高于 `(The, nice, woman)` (0.2)，成功找到了更优路径。
+
+### 基础用法
+设置 `num_beams > 1` 和 `early_stopping=True`：
+
+```python
+# 激活波束搜索
+beam_output = model.generate(
+    input_ids, 
+    max_length=50, 
+    num_beams=5, 
+    early_stopping=True
+)
+
+print("Output:\n" + 100 * '-')
+print(tokenizer.decode(beam_output[0], skip_special_tokens=True))
+```
+
+### 优化：n-gram 惩罚
+为了解决重复问题，可以引入 `no_repeat_ngram_size`。它通过将已出现的 n-gram 候选词概率设为 0 来强制不重复。
+
+```python
+# 设置 no_repeat_ngram_size=2，确保任意 2-gram 不重复出现
+beam_output = model.generate(
+    input_ids, 
+    max_length=50, 
+    num_beams=5, 
+    no_repeat_ngram_size=2, 
+    early_stopping=True
+)
+```
+
+**注意**：n-gram 惩罚需谨慎使用。例如在生成关于“纽约 (New York)”的文章时，若设置 `no_repeat_ngram_size=2`，则该地名只能出现一次。
+
+### 局限性
+尽管波束搜索比贪心搜索更稳健，但在开放域文本生成（如对话、故事）中仍有不足：
+1.  **惊喜度低**：波束搜索倾向于生成最可能的、中规中矩的词，这往往使生成的文本显得枯燥、不具“人性”。
+2.  **长度偏差**：在生成长度不固定的任务中，波束搜索难以平衡。
+3.  **重复风险**：即便有惩罚机制，依然难以完全消除循环生成的倾向。
+
+下图展示了人类文本与波束搜索生成文本的概率分布差异：人类语言的“惊喜度”（概率波动）远高于波束搜索：
+
+```text
+          BeamSearch vs Human (Surprise Level)
+P (Probability)
+1.0 ─┐
+0.8 ─┤          /--\      Human (High Variance)
+0.6 ─┤   /--\--/    \--
+0.4 ─┤  ----------------  BeamSearch (Flat/Predictable)
+0.2 ─┤
+0.0 ─┴──────────────────────────────────────
+      0  20  40  60  80  100 (Timestep)
+```
+因此，若希望生成的文本更有创意，可引入随机性。
+
+## 3. 随机采样 (Sampling)
+采样意味着根据当前条件概率分布随机选择下一个 Token：
+$$w_{t} \sim P(w | w_{1:t-1})$$
+
+以初始词 **The** 为例，采样过程如下：
+
+| 初始词 | 采样候选及概率 | 生成序列 (示例) |
+| :--- | :--- | :--- |
+| **The** | nice (0.5)、dog (0.3)、car (0.1)、is (0.05) | **The → car → drives** |
+
+采样引入了非确定性，使生成的文本更多样。
+
+### 基础用法
+在 `transformers` 中设置 `do_sample=True`：
+
+```python
+# 设置随机种子以复现结果
+tf.random.set_seed(0)
+
+# 激活采样，并关闭 top_k (通过设为 0)
+sample_output = model.generate(
+    input_ids, 
+    do_sample=True, 
+    max_length=50, 
+    top_k=0
+)
+```
+
+**问题**：直接采样往往会导致文本不连贯，甚至出现乱码（如 `new hand sense`），这是因为低概率的词被意外选中。这也是导致大模型输出 JSON 等结构化数据时格式不稳定的根源（详见实战案例：[LLM输出JSON稳定性实战.md](../../资料/网页图书资料/model/LLM输出JSON稳定性实战.md)）。
+
+### 优化：温度调节 (Temperature)
+通过 **Temperature ($T$)** 缩放 Softmax 分布，可以调节生成的“创造力”：
+$$P_i = \frac{\exp(z_i / T)}{\sum_j \exp(z_j / T)}$$
+
+-   **低温度 ($T < 1$)**：使分布更“尖锐”，高概率词概率更高，结果更保守连贯。
+-   **高温度 ($T > 1$)**：使分布更“平坦”，低概率词机会增加，结果更多样但也更易乱码。
+-   **当 $T \to 0$**：退化为贪心搜索。
+
+```python
+# 设置 temperature=0.7 使生成更平稳
+sample_output = model.generate(
+    input_ids, 
+    do_sample=True, 
+    max_length=50, 
+    top_k=0, 
+    temperature=0.7
+)
+```
+
+## 4. Top-K 采样
+Top-K 采样通过将采样池限制在概率最大的 $K$ 个词中，并重新归一化概率，从而过滤掉低概率的“长尾”噪声词。
+
+### Top-K 局限性
+固定 $K$ 值无法适应不同的概率分布：
+-   **分布陡峭时**：前 1-2 个词就占据了绝大部分概率，设置 $K=50$ 会引入过多的干扰词。
+-   **分布平坦时**：前 50 个词的概率可能都很接近，设置 $K=50$ 又会限制模型的发挥。
+
+## 5. Top-p (核) 采样 (Nucleus Sampling)
+Top-p 采样解决了固定 $K$ 的问题。它根据累积概率动态选择采样池：
+1.  将词按概率降序排列。
+2.  选取最小的集合 $V_{\text{top-p}}$，使得其累积概率和 $\ge p$。
+
+### 动态采样池对比
+假设 $p=0.92$：
+-   **预测较难时**（如 $P(w | \text{The})$）：分布平坦，采样池可能包含 100 个词。
+-   **预测较易时**（如 $P(w | \text{The, car})$）：分布陡峭，采样池可能仅包含 2-3 个词。
+
+**分布可视化**：
+
+```text
+       Flat Distribution (p=0.92)        Sharp Distribution (p=0.92)
+P 1.0 ─┐                          P 1.0 ─┐
+       │   ________                      │   __
+       │  |        | (Pool: 50 tokens)   │  |  | (Pool: 3 tokens)
+       └─┴──────────┴──────              └─┴──┴────────
+```
+
+### 基础用法
+在 `transformers` 中设置 `0 < top_p < 1`：
+
+```python
+# 激活 Top-p 采样
+sample_output = model.generate(
+    input_ids, 
+    do_sample=True, 
+    max_length=50, 
+    top_p=0.92, 
+    top_k=0
+)
+```
+
+## 6. 综合建议：Top-K + Top-p + Temperature
+在实际应用中，通常会将三者结合使用，以达到最佳的平衡。
+
+```python
+from transformers import GenerationConfig
+
+# 使用 GenerationConfig 进行统一管理
+gen_config = GenerationConfig(
+    do_sample=True,
+    top_k=50,
+    top_p=0.95,
+    temperature=0.8,
+    repetition_penalty=1.2,
+    max_new_tokens=100,
+    pad_token_id=tokenizer.eos_token_id
+)
+
+output = model.generate(input_ids, generation_config=gen_config)
+```
+
+## 7. 解码策略对比总结
+
+| 策略 | 核心思想 | 优点 | 缺点 | 适用场景 |
+| :--- | :--- | :--- | :--- | :--- |
+| **贪心搜索** | 每步取最高概率 | 速度快，逻辑简单 | 易陷入局部最优，易重复 | 确定性任务（如公式推导） |
+| **波束搜索** | 保留多条路径 | 序列联合概率高 | 缺乏多样性，计算量大 | 翻译、摘要、QA |
+| **Top-K 采样** | 限制前 K 个词 | 过滤长尾噪声 | $K$ 值固定，适应性差 | 创意写作、故事生成 |
+| **Top-p 采样** | 动态累积概率 | 适应性强，文本连贯 | 采样池大小不确定 | 通用对话、开放式生成 |
+| **受限解码** | FSM 状态机约束 | **100% 格式正确** | 首次编译延迟 | **JSON 提取、结构化输出** |
+
+> **提示**：在生产环境中，若需模型稳定返回 JSON 格式，传统的贪心或采样策略往往不够彻底。建议参考 [LLM输出JSON稳定性实战.md](../../资料/网页图书资料/model/LLM输出JSON稳定性实战.md) 了解 **Structured Output (结构化输出)** 的实现原理与最佳实践。
+
+## 8. 受限解码深度解析 (FSM vs CFG)
+
+受限解码的工程实现主要基于两种计算模型：**有限状态机（Finite State Machine，FSM）** 和 **上下文无关文法（Context-Free Grammar，CFG）**。
+
+### 8.1 FSM 与 CFG 核心对比
+
+| 特性 | **FSM (有限状态机)** | **CFG (上下文无关文法)** |
+| :--- | :--- | :--- |
+| **定义** | 有限状态自动机，通过状态转移判断输入合法性 | 通过递归规则描述语言结构的语法系统 |
+| **特点** | 无栈结构，状态数固定 | 支持递归，带栈自动机 (Pushdown Automaton) |
+| **表达能力** | 正则语言 (Regular Language) | 上下文无关语言 (Context-Free Language) |
+| **适合场景** | 正则表达式、固定格式、简单 JSON、Tool Call 参数 | 复杂 JSON、SQL、编程语言、复杂 DSL |
+| **优点** | 推理速度快，实现简单，工程稳定 | 表达能力强，支持无限嵌套 |
+| **缺点** | 无法表达无限嵌套结构 | 推理开销大，实现复杂 |
+
+### 8.2 在 LLM 受限解码中的作用
+
+LLM 结构化输出的通用工程流程如下：
+`Schema / Grammar` → `CFG 或 FSM 编译` → `生成 Token Mask` → `Logit Masking` → `受限解码输出`
+
+**核心作用**：在生成每个 Token 时，动态限制模型只能输出符合语法规则的 Token。从而保证：
+- JSON 100% 合法
+- Tool Call 参数结构正确
+- SQL 语法无误
+
+### 8.3 业界方案分布
+
+| 方案类别 | 厂商 / 框架 | 应用场景 |
+| :--- | :--- | :--- |
+| **CFG 方案** | **OpenAI** | Structured Outputs, JSON Schema, Tool Calling |
+| | **Anthropic** | Claude 的 Tool Use, Structured Output (Grammar-based) |
+| | **Microsoft** | Guidance, Semantic Kernel |
+| **FSM / Regex 方案** | **vLLM** | Guided Decoding (FSM/Regex/JSON) |
+| | **Hugging Face** | Transformers Constrained Decoding, Outlines |
+| | **Mistral AI** | Function Calling, Structured Outputs |
+
+### 8.4 工程实践建议
+
+实际系统中通常根据复杂度和性能要求进行选择：
+- **简单 JSON / Regex / 固定格式**：优先选择 **FSM**。
+- **复杂 JSON Schema / SQL / DSL**：必须使用 **CFG**。
+- **混合模式**：许多现代系统（如 OpenAI）采用 **CFG → 编译 → FSM** 的链路，既保证了表达能力，又兼顾了推理速度。
+
+**一句话总结**：
+FSM 快但有限，适合简单约束；CFG 强但略慢，适合复杂嵌套。现代 LLM 的结构化输出本质上就是：**语言模型 + 语法约束解码 (FSM/CFG)**。
+
+## 9. 实际业务应用示例
+
+### 场景 1：追求精确性的提取任务
+如从文本中提取关键信息，需要模型尽量保守：
+```python
+# 业务配置：低温度波束搜索
+output_texts = model.generate(
+    input_ids=input_ids,
+    num_beams=5,
+    do_sample=False,
+    temperature=0.1,
+    early_stopping=True
+)
+```
+
+### 场景 2：追求多样性的创意生成
+如写诗、写故事，需要模型有更多发挥空间：
+```python
+# 业务配置：高温度 + Top-K + Top-p
+output_texts = model.generate(
+    input_ids=input_ids,
+    do_sample=True,
+    top_k=50,
+    top_p=0.9,
+    temperature=0.9,
+    repetition_penalty=1.1
+)
+```
