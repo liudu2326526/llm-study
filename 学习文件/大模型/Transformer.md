@@ -1,349 +1,543 @@
+# Transformer 深度解析
 
+> Transformer 结构是当前大模型的核心架构，自 2017 年论文 *"Attention Is All You Need"* 发表以来，已成为自然语言处理乃至多模态 AI 领域最重要的基础架构。
 
-# 背景
-Transformer结构是当前大模型的核心架构，自2017年被提出以来，已成为自然语言处理领域最重要的基础技术之一。其设计初衷是为了解决传统循环神经网络在序列建模中存在的长期依赖问题与训练效率瓶颈。相比于RNN与LSTM，Transformer完全抛弃了时间步迭代结构，采用**全并行的自注意力机制**，使得模型在序列建模中**兼顾了建模能力与计算效率**，成为后续BERT、GPT、T5等主流模型的基础结构。
-Transformer的核心在于其堆叠式的编码器−解码器架构与全局注意力机制，能够实现对输入序列中任意位置信息的建模，是支持语言理解与生成任务的关键机制，其架构的模块化、层级化特点也极大地增强了系统的可扩展性，便于与其他智能体组件协同构建复杂任务流程。
+---
 
-# 架构
+## 目录
+
+- [一、背景与动机](#一背景与动机)
+- [二、整体架构概览](#二整体架构概览)
+- [三、核心组件详解](#三核心组件详解)
+  - [1. Embedding（嵌入层）](#1-embedding嵌入层)
+  - [2. Positional Encoding（位置编码）](#2-positional-encoding位置编码)
+  - [3. Attention Mechanism（注意力机制）](#3-attention-mechanism注意力机制)
+  - [4. Add & Norm（残差连接与层归一化）](#4-add--norm残差连接与层归一化)
+  - [5. Feed Forward Network（前馈神经网络）](#5-feed-forward-network前馈神经网络)
+  - [6. Linear & Softmax（输出层）](#6-linear--softmax输出层)
+- [四、三大架构范式](#四三大架构范式)
+- [五、训练机制](#五训练机制)
+- [六、解码策略与生成参数](#六解码策略与生成参数)
+- [七、受限解码深度解析](#七受限解码深度解析)
+- [八、实际业务应用示例](#八实际业务应用示例)
+
+---
+
+## 一、背景与动机
+
+### 1.1 传统序列模型的困境
+
+在 Transformer 出现之前，序列建模主要依赖 **RNN** 及其变体（LSTM、GRU）：
+
+| 模型 | 核心问题 |
+| :--- | :--- |
+| **RNN** | 梯度消失/爆炸，难以捕捉长距离依赖 |
+| **LSTM** | 通过门控机制缓解了梯度问题，但时间步必须串行计算，**训练效率极低** |
+| **GRU** | 简化版 LSTM，问题类似 |
+| **CNN (序列建模)** | 可以并行，但感受野有限，需要多层堆叠才能捕捉远距离信息 |
+
+核心瓶颈总结：
+- **串行计算**：RNN 系列必须按时间步逐个处理，无法充分利用 GPU 并行能力。
+- **长程依赖**：即使是 LSTM，在序列超过数百个 Token 后，早期信息仍会显著衰减。
+
+### 1.2 Transformer 的突破
+
+Transformer 完全抛弃了时间步迭代结构，采用 **全并行的自注意力机制（Self-Attention）**，核心突破在于：
+
+1. **全局视野**：任意两个 Token 之间可以直接交互，无需像 RNN 那样逐步传递信息。
+2. **完全并行**：所有位置的计算可以同时进行，训练速度大幅提升。
+3. **模块化设计**：编码器-解码器的堆叠式结构具有极强的可扩展性，便于构建从亿级到万亿级参数的模型。
+
+这些特性使 Transformer 成为后续 BERT、GPT、T5、LLaMA 等主流模型的统一基础架构。
+
+---
+
+## 二、整体架构概览
+
 ![Transformer Architecture](../resource/transformers_architecture.png)
 
-## 核心组件介绍
+Transformer 采用经典的 **编码器-解码器（Encoder-Decoder）** 架构，原始论文中编码器和解码器各堆叠 6 层（$N=6$）。
 
-### 1. Embedding (嵌入层)
-- **Token Embedding**: 将输入的离散 Token（如单词或字符）映射为高维连续向量空间。通过学习到的权重矩阵，将每个 Token 转换为固定维度（如 $`d_{\text{model}}=512`$）的特征表示。
-- **Output Embedding**: 在解码阶段，将目标 Token 也转换为向量表示，以便与编码器的输出进行交互。
+### 2.1 数据流概览
 
-#### 1.1 分词算法变体 (Tokenization)
-- **BPE (Byte Pair Encoding)**: 通过合并高频字节对实现子词切分。
-  - **核心原理**: 从字符级开始，不断统计并合并训练语料中相邻频率最高的两个子词（Token），直到达到预设的词表大小。
-  - **核心步骤**:
-    1. 准备语料，将单词拆分为字符序列，并添加结束符 `</w>`。
-    2. 统计所有相邻子词对的频率。
-    3. 找到频率最高的子词对，将其合并为一个新的 Token。
-    4. 重复上述步骤，直到词表达到设定大小或无法再合并。
-  - **具体示例**:
-    - 假设语料中有 `{"hug": 10, "pug": 5, "pun": 12, "bun": 4}`。
-    - 第一步合并频率最高的 `u` 和 `n`（共 $12+4=16$ 次），得到 `un`。
-    - 接着合并 `h` 和 `ug` 等。
-  - **优点**: 能够有效处理未登录词（OOV），平衡了字符级（太碎）和词级（词表太大）的缺点。
-  - **应用**: GPT 系列、LLaMA、Baichuan。
-- **WordPiece**: 类似于 BPE，但基于似然度选择合并项。
-  - **应用**: BERT。
-- **Unigram**: 基于概率语言模型。
-  - **应用**: T5、XLNet。
+```text
+输入序列 → [Token Embedding + Positional Encoding]
+                        ↓
+              ┌─────────────────────┐
+              │   Encoder × N 层    │
+              │  ┌───────────────┐  │
+              │  │ Self-Attention │  │
+              │  │   Add & Norm  │  │
+              │  │  Feed Forward │  │
+              │  │   Add & Norm  │  │
+              │  └───────────────┘  │
+              └────────┬────────────┘
+                       │ 编码器输出（K, V）
+                       ↓
+              ┌─────────────────────┐
+              │   Decoder × N 层    │
+              │  ┌───────────────┐  │
+              │  │Masked Self-Att│  │
+              │  │   Add & Norm  │  │
+              │  │Cross-Attention│ ←── 编码器的 K, V
+              │  │   Add & Norm  │  │
+              │  │  Feed Forward │  │
+              │  │   Add & Norm  │  │
+              │  └───────────────┘  │
+              └────────┬────────────┘
+                       ↓
+              [Linear → Softmax → 输出概率]
+```
+
+### 2.2 编码器 vs 解码器的关键区别
+
+| 特性 | 编码器 (Encoder) | 解码器 (Decoder) |
+| :--- | :--- | :--- |
+| **注意力类型** | 双向自注意力（可看全文） | 因果自注意力（只看左侧已生成的内容） |
+| **遮蔽机制** | 无遮蔽 | **Masked Self-Attention**：防止"偷看"未来 Token |
+| **交叉注意力** | 无 | **Cross-Attention**：从编码器获取源序列信息 |
+| **典型用途** | 理解、分类、编码表示 | 生成、翻译、自回归输出 |
+
+### 2.3 三种注意力机制一览
+
+Transformer 中实际包含 **三种不同的注意力**：
+
+1. **Encoder Self-Attention**：编码器中的双向自注意力，Q/K/V 均来自编码器输入。每个 Token 可以关注输入序列中的所有位置。
+2. **Masked Self-Attention（因果注意力）**：解码器中的自注意力，Q/K/V 均来自解码器输入。通过遮蔽矩阵（上三角为 $-\infty$），确保位置 $i$ 只能关注位置 $\leq i$ 的 Token，防止信息泄露。
+3. **Cross-Attention（交叉注意力）**：解码器中的第二个注意力层。**Q 来自解码器，K 和 V 来自编码器的输出**。这是编码器信息流向解码器的唯一通道。
+
+---
+
+## 三、核心组件详解
+
+### 1. Embedding（嵌入层）
+
+- **Token Embedding**：将输入的离散 Token（如单词或子词）映射为高维连续向量。通过学习到的权重矩阵，将每个 Token 转换为固定维度（如 $`d_{\text{model}}=512`$）的特征表示。
+- **Output Embedding**：在解码阶段，将目标 Token 也转换为向量表示，以便与编码器的输出进行交互。
+
+#### 1.1 分词算法（Tokenization）
+
+| 算法 | 核心原理 | 代表模型 |
+| :--- | :--- | :--- |
+| **BPE** | 从字符级开始，反复合并最高频的相邻子词对 | GPT 系列、LLaMA、Baichuan |
+| **WordPiece** | 类似 BPE，但基于似然度（而非频率）选择合并项 | BERT |
+| **Unigram** | 基于概率语言模型，从大词表逐步剪枝至目标大小 | T5、XLNet |
+
+**BPE 详细步骤**：
+1. 准备语料，将单词拆分为字符序列，并添加结束符 `</w>`。
+2. 统计所有相邻子词对的频率。
+3. 找到频率最高的子词对，将其合并为一个新的 Token。
+4. 重复上述步骤，直到词表达到设定大小或无法再合并。
+
+**具体示例**：
+- 假设语料中有 `{"hug": 10, "pug": 5, "pun": 12, "bun": 4}`。
+- 第一步合并频率最高的 `u` 和 `n`（共 $12+4=16$ 次），得到 `un`。
+- 接着合并 `h` 和 `ug` 等。
+
+**优点**：能够有效处理未登录词（OOV），平衡了字符级（太碎）和词级（词表太大）的缺点。
 
 #### 1.2 词表与权重变体
-- **Tie Embedding**: 共享输入与输出层的 Embedding 权重，减少模型参数量。
-  - **应用**: GPT-2、PaLM。
-- **Scaling**: 在 Embedding 后乘以 $`\sqrt{d_{\text{model}}}`$。
-  - **应用**: 原始 Transformer。
 
-#### 1.3 中文向量化策略 (Chinese Vectorization Strategies)
+- **Tie Embedding**：共享输入与输出层的 Embedding 权重，减少模型参数量。
+  - 应用：GPT-2、PaLM。
+- **Scaling**：在 Embedding 后乘以 $`\sqrt{d_{\text{model}}}`$，防止 Embedding 值过小被位置编码淹没。
+  - 应用：原始 Transformer。
+
+#### 1.3 中文向量化策略
+
 针对中文特有的语言特性，常见的向量化（分词）策略包括：
 
-- **字级别 (Character-level)**: 将每个汉字作为一个 Token。
-  - **优点**: 词表小（几千个常用字），无 OOV 问题。
-  - **缺点**: 无法有效捕捉词组级别的语义信息。
-  - **应用**: BERT-base-chinese。
-- **词级别 (Word-level)**: 先使用分词工具（如 Jieba、HanLP）进行分词，再进行向量化。
-  - **优点**: 语义明确。
-  - **缺点**: 词表极其庞大，存在严重的 OOV 问题和分词歧义。
-- **子词级别 (Subword-level - 主流)**:
-  - **BBPE (Byte-level BPE)**: 直接在字节流上运行 BPE。
-    - **特点**: 通过将 UTF-8 编码的字节合并，可以表示任何字符（包括罕见字、Emoji、代码），彻底解决 OOV 问题。
-    - **应用**: GPT-3/4、LLaMA、DeepSeek。
-  - **SentencePiece**: 一种集成化的分词框架，支持 BPE 和 Unigram。
-    - **特点**: 不需要预分词，直接将原始文本（含空格）处理为子词序列，对中英文混合语料支持极佳。
-    - **应用**: LLaMA-chinese、Baichuan、ChatGLM 系列。
-- **中文字词兼顾策略**: 部分模型在词表中显式加入高频中文词汇（如“人工智能”），以提升中文处理效率和理解深度。
+| 策略 | 特点 | 代表模型 |
+| :--- | :--- | :--- |
+| **字级别** | 词表小（几千字），无 OOV，但无法捕捉词组语义 | BERT-base-chinese |
+| **词级别** | 语义明确，但词表庞大、OOV 严重、分词歧义 | （需 Jieba/HanLP 预分词） |
+| **BBPE（字节级 BPE）** | 在 UTF-8 字节流上运行 BPE，彻底解决 OOV | GPT-3/4、LLaMA、DeepSeek |
+| **SentencePiece** | 集成化框架，直接处理原始文本，中英混合支持极佳 | LLaMA-chinese、Baichuan、ChatGLM |
 
-#### 1.4 Token 数计算逻辑 (Token Calculation Logic)
+部分模型还采用 **字词兼顾策略**：在词表中显式加入高频中文词汇（如"人工智能"），提升中文处理效率。
+
+#### 1.4 Token 数计算逻辑
+
 在实际应用中，准确估算 Token 数对于成本控制和上下文管理至关重要。
 
-- **中英文差异估算**:
-  - **英文**: 经验上，1000 个 Token 约等于 750 个英文单词（1 word ≈ 1.33 tokens）。
-  - **中文**: 取决于分词器，通常 1 个汉字 ≈ 1.2 到 2 个 Tokens。
-    - **字级别分词**: 1 汉字 = 1 Token。
-    - **子词级别 (BPE/SentencePiece)**: 由于存在词组合并，1 汉字可能占用 1.5 到 2 个字节编码后的 Tokens。
-- **影响因素**:
-  - **词表大小**: 词表越大，单个 Token 承载的信息量通常越多，总 Token 数越少。
-  - **特殊字符**: 空格、换行符、Emoji、特殊符号（如代码中的缩进）都会占用独立的 Tokens。
-- **计算公式示例**:
-  - 文本总 Token 数 = $\sum (\text{分词后的子词数量}) + \text{特殊占位符数量 (如 [CLS], [SEP])}$。
-- **实用工具**:
-  - **Tiktoken**: OpenAI 提供的 BPE 分词器工具。
-  - **HuggingFace Tokenizers**: 支持多种主流开源模型的分词计算。
+- **中英文差异估算**：
+  - **英文**：约 1000 Tokens ≈ 750 个英文单词（1 word ≈ 1.33 tokens）。
+  - **中文**：通常 1 个汉字 ≈ 1.2 ~ 2 个 Tokens（取决于分词器）。
+- **影响因素**：
+  - **词表大小**：词表越大，单个 Token 承载信息越多，总 Token 数越少。
+  - **特殊字符**：空格、换行符、Emoji、代码缩进等都会占用独立 Tokens。
+- **计算公式**：
 
-### 2. Positional Encoding (位置编码)
+$$\text{Total Tokens} = \sum (\text{分词后的子词数量}) + \text{特殊占位符数量 (如 [CLS], [SEP])}$$
+
+- **实用工具**：
+  - **Tiktoken**：OpenAI 提供的 BPE 分词器。
+  - **HuggingFace Tokenizers**：支持多种主流开源模型的分词计算。
+
+---
+
+### 2. Positional Encoding（位置编码）
+
 #### 2.1 为什么需要位置编码？
-Transformer 的注意力机制对序列顺序不敏感（Permutation Invariant）。如果不加位置编码，模型会将 "I love machine" 和 "machine love I" 视为完全相同。
 
-#### 2.1 绝对位置编码 (Absolute PE)
-- **Sinusoidal (正余弦编码)**: 原始 Transformer 采用的方法，使用不同频率的正余弦函数生成固定编码。优点是无需学习，且理论上具有一定的长度外推性。
-- **公式**:
+Transformer 的注意力机制对序列顺序天然不敏感（Permutation Invariant）。如果不加位置编码，模型会将 `"I love you"` 和 `"you love I"` 视为完全相同的输入。位置编码的作用就是为每个 Token 注入位置信息。
 
-$$
-PE_{(pos, 2i)} = \sin(pos / 10000^{2i/d_{\text{model}}})
-$$
-$$
-PE_{(pos, 2i+1)} = \cos(pos / 10000^{2i/d_{\text{model}}})
-$$
-- **Learned (可学习编码)**: 为每个位置（如 0-511）分配一个可学习的向量（如 BERT、GPT-2）。缺点是无法处理超过训练时最大长度的序列。
+#### 2.2 绝对位置编码（Absolute PE）
 
-#### 2.2 旋转位置编码 (RoPE - Rotary Positional Embedding)
-- **核心思想**: 通过旋转矩阵将相对位置信息注入到 Query 和 Key 中。它在保持绝对位置信息的同时，通过旋转角度的差值体现相对位置。
-- **优点**: 
-  - 具有良好的**长度外推性**（模型可以处理比训练时更长的序列）。
+**Sinusoidal（正余弦编码）**：原始 Transformer 采用的方法，使用不同频率的正余弦函数生成固定编码：
+
+$$PE_{(pos, 2i)} = \sin(pos / 10000^{2i/d_{\text{model}}})$$
+
+$$PE_{(pos, 2i+1)} = \cos(pos / 10000^{2i/d_{\text{model}}})$$
+
+- 优点：无需学习参数，理论上具有一定的长度外推性。
+- 直觉：不同维度使用不同频率的波，低频维度编码粗粒度位置，高频维度编码细粒度位置。
+
+**Learned（可学习编码）**：为每个位置分配一个可学习的向量（如 BERT 最大 512、GPT-2 最大 1024）。缺点是无法处理超过训练时最大长度的序列。
+
+#### 2.3 旋转位置编码（RoPE）
+
+- **核心思想**：通过旋转矩阵将相对位置信息注入到 Query 和 Key 中。它在保持绝对位置信息的同时，通过旋转角度的差值自然地体现相对位置关系。
+- **关键优势**：
+  - 良好的 **长度外推性**（配合 NTK-aware 插值等技术，模型可以处理比训练时更长的序列）。
   - 随着距离增加，注意力分数的衰减更自然。
-- **代表模型**: LLaMA、PaLM、GLM、DeepSeek。
+- **代表模型**：LLaMA、PaLM、GLM、DeepSeek。
 
-#### 2.3 相对位置偏差 (ALiBi - Attention with Linear Biases)
-- **核心思想**: 不在 Embedding 上加位置信息，而是直接在计算 Attention Score ($QK^T$) 时，根据距离添加一个线性惩罚项。
-- **优点**: 极强的外推性，即使在极长序列下也能保持稳定。
-- **代表模型**: BLOOM、Falcon、Baichuan2-13B。
+#### 2.4 线性偏置注意力（ALiBi）
 
-#### 2.4 相对位置编码 (Relative PE)
-- **核心思想**: 不考虑绝对坐标，只考虑词与词之间的相对距离（如 $i-j$）。
-- **代表模型**: T5 (使用可学习的相对位置偏置)。
+- **核心思想**：不在 Embedding 上加位置信息，而是直接在计算 Attention Score（$QK^T$）时，根据 Token 间距离添加一个线性惩罚项。距离越远，惩罚越大。
+- **优势**：极强的外推性，即使在极长序列下也能保持稳定。
+- **代表模型**：BLOOM、Falcon、Baichuan2-13B。
 
-### 3. Attention Mechanism (注意力机制)
-- **自注意力 (Self-Attention)**: 通过计算查询（Query）、键（Key）和值（Value）之间的关联度，让模型在处理当前词时，能够“关注”到序列中其他相关的词。
-- **公式**:
+#### 2.5 相对位置编码（Relative PE）
 
-$$
-\text{Attention}(Q, K, V) = \text{softmax}\left(\frac{QK^T}{\sqrt{d_k}}\right)V
-$$
+- **核心思想**：不考虑绝对坐标，只考虑词与词之间的相对距离（如 $i-j$）。
+- **代表模型**：T5（使用可学习的相对位置偏置）。
 
-#### 3.1 多头注意力变体 (Multi-Head Variants)
+#### 2.6 位置编码方案对比
+
+| 方案 | 类型 | 外推性 | 代表模型 |
+| :--- | :--- | :--- | :--- |
+| Sinusoidal | 绝对 | 一般 | 原始 Transformer |
+| Learned | 绝对 | 无 | BERT、GPT-2 |
+| RoPE | 绝对+相对 | 强（配合插值） | LLaMA、DeepSeek |
+| ALiBi | 相对偏置 | 极强 | BLOOM、Falcon |
+| T5 Bias | 相对 | 中等 | T5 |
+
+---
+
+### 3. Attention Mechanism（注意力机制）
+
+#### 3.1 自注意力的计算过程
+
+自注意力是 Transformer 的核心。给定输入矩阵 $X$（每行是一个 Token 的向量），计算过程如下：
+
+**Step 1：生成 Q、K、V**
+
+$$Q = XW^Q, \quad K = XW^K, \quad V = XW^V$$
+
+其中 $W^Q, W^K \in \mathbb{R}^{d_{\text{model}} \times d_k}$，$W^V \in \mathbb{R}^{d_{\text{model}} \times d_v}$ 是可学习的投影矩阵。
+
+**Step 2：计算注意力分数**
+
+$$\text{Attention}(Q, K, V) = \text{softmax}\left(\frac{QK^T}{\sqrt{d_k}}\right)V$$
+
+- $QK^T$：计算每对 Token 之间的相似度（点积），得到 $L \times L$ 的注意力矩阵。
+- $\sqrt{d_k}$：**缩放因子**。当 $d_k$ 较大时，点积的方差也会增大，导致 Softmax 输出趋近于 one-hot（梯度接近于 0）。除以 $\sqrt{d_k}$ 可以稳定梯度。
+- Softmax：将分数归一化为概率分布，使每个 Token 对其他 Token 的注意力权重之和为 1。
+- 乘以 $V$：按注意力权重对 Value 向量加权求和，得到每个位置的输出。
+
+**直观理解**：
+- **Q（查询）**：「我在找什么信息？」
+- **K（键）**：「我有什么信息可以提供？」
+- **V（值）**：「我实际能提供的内容是什么？」
+
+Q 和 K 的点积衡量"需求"与"供给"的匹配度，匹配度越高的 V 被赋予越大的权重。
+
+#### 3.2 多头注意力（Multi-Head Attention）
+
+单个注意力头只能捕捉一种类型的关联模式。多头注意力通过并行运行多组注意力头，让模型同时关注不同子空间的信息：
+
+$$\text{MultiHead}(Q, K, V) = \text{Concat}(\text{head}_1, \dots, \text{head}_h)W^O$$
+
+$$\text{where head}_i = \text{Attention}(QW_i^Q, KW_i^K, VW_i^V)$$
+
+- 每个头使用独立的投影矩阵，在不同的子空间中学习不同的注意力模式。
+- 例如：某些头关注语法结构，某些头关注语义关系，某些头关注位置邻近信息。
+- 原始 Transformer：$h=8$，$d_k = d_v = d_{\text{model}} / h = 64$。
+
+#### 3.3 多头注意力变体
+
 为了平衡计算效率（尤其是推理时的 KV Cache 占用）与模型性能，演化出了以下变体：
 
-- **MHA (Multi-Head Attention)**: 每个 Query 头都有对应的 Key 和 Value 头。参数量大，但表达能力最强。
-- **MQA (Multi-Query Attention)**: 所有的 Query 头共享同一组 Key 和 Value 头。极大压缩了 KV Cache，提升了推理吞吐，但模型精度略有下降。
-  - **代表模型**: PaLM、Falcon、GPT-NeoX。
-- **GQA (Grouped-Query Attention)**: MHA 与 MQA 的折中方案。将 Query 头分组，每组共享一组 Key 和 Value 头。在保持接近 MHA 性能的同时，获得接近 MQA 的速度。
-  - **代表模型**: LLaMA-2 (70B)、LLaMA-3。
-- **MLA (Multi-head Latent Attention)**: 通过低秩投影对 KV 进行压缩和解压。显著降低了 KV Cache 的显存占用，同时保持了高性能。
-  - **代表模型**: DeepSeek-V3。
+| 变体 | 机制 | 优缺点 | 代表模型 |
+| :--- | :--- | :--- | :--- |
+| **MHA** | 每个 Q 头对应独立的 K/V 头 | 表达能力最强，但 KV Cache 占用大 | 原始 Transformer、BERT |
+| **MQA** | 所有 Q 头共享同一组 K/V | 极大压缩 KV Cache，精度略降 | PaLM、Falcon |
+| **GQA** | Q 头分组，每组共享一组 K/V | MHA 与 MQA 的最佳折中 | LLaMA-2/3 |
+| **MLA** | 通过低秩投影压缩/解压 KV | 显存占用极低，性能接近 MHA | DeepSeek-V3 |
 
-#### 3.2 稀疏注意力 (Sparse Attention)
-旨在解决自注意力机制中 $O(L^2)$ 的复杂度问题，使其能处理更长的序列：
+#### 3.4 稀疏注意力（Sparse Attention）
 
-- **Sliding Window Attention (滑窗注意力)**: 每个 Token 只关注其前后固定范围内的 Token。将复杂度降为 $O(L \times W)$。
-  - **代表模型**: Mistral、Longformer。
-- **Global + Sliding Window**: 在滑窗基础上，指定部分 Token（如 `[CLS]` 或特定关键词）具有全局视野，关注所有位置。
-- **BigBird / Longformer**: 结合了随机注意力、滑窗注意力和全局注意力，实现对超长序列的高效建模。
-- **FlashAttention**: 虽然不是算法层面的稀疏，但通过 IO 感知的显存优化，极大地提升了标准注意力的计算速度，是大模型训练的标配。
+标准自注意力的复杂度为 $O(L^2)$，限制了序列长度。稀疏注意力通过限制注意力范围来降低复杂度：
 
-#### 3.3 KV Cache (键值缓存)
-**一句话理解**：KV Cache 是将 Transformer 历史 Token 的 Key 和 Value 缓存起来，避免每次生成新 Token 时重复计算，是 LLM 推理最重要的优化技术。
+| 方法 | 机制 | 复杂度 | 代表模型 |
+| :--- | :--- | :--- | :--- |
+| **Sliding Window** | 每个 Token 只关注前后固定窗口 | $O(L \times W)$ | Mistral、Longformer |
+| **Global + Sliding** | 滑窗 + 部分 Token 具有全局视野 | $O(L \times (W+G))$ | Longformer |
+| **BigBird** | 随机 + 滑窗 + 全局的组合 | $O(L)$ | BigBird |
+| **FlashAttention** | IO 感知的显存优化（非稀疏算法） | $O(L^2)$ 但速度极快 | 大模型训练标配 |
 
-- **为什么需要 KV Cache？**
-  LLM 推理本质是**自回归生成 (Next-token prediction)**。
-  例如生成 "I love machine learning"：
-  1. `I` -> `love`
-  2. `I love` -> `machine`
-  3. `I love machine` -> `learning`
-  每生成一个新 Token，模型都要执行一次完整的 Forward 过程。在计算 Attention ($QK^T$)V 时，若无缓存，生成第 $n$ 个 Token 需要重新计算前 $n-1$ 个 Token 的 K 和 V。这导致计算量随序列长度呈平方级增长 ($O(n^2)$)。
+> **FlashAttention** 虽然不改变算法复杂度，但通过精心设计的 GPU 显存访问模式（tiling + recomputation），避免了对 $L \times L$ 注意力矩阵的显式存储，在实践中将注意力计算速度提升 2-4 倍。
 
-- **核心思想：缓存不变项**
-  关键观察：**历史 Token 的 K 和 V 在生成后续 Token 时是不会改变的**。
-  因此可以将其缓存：
-  - **K-cache** = $[K_1, K_2, \dots, K_{n-1}]$
-  - **V-cache** = $[V_1, V_2, \dots, V_{n-1}]$
-  生成新 Token 时，只需计算当前 Token 的 $`Q_{\text{new}}`$，然后与缓存进行计算：
-  $`\text{Attention}(Q_{\text{new}}, \text{K}_{\text{cache}}, \text{V}_{\text{cache}})`$。
+#### 3.5 KV Cache（键值缓存）
 
-- **性能提升：$O(n^2) \to O(n)$**
-  - **无 KV Cache**：每一步重算全部 Token，复杂度 $O(n^2)$。
-  - **有 KV Cache**：每一步只算当前 Token，复杂度降为 $O(n)$。
-  这极大提升了推理速度，是所有主流框架（如 OpenAI, vLLM）的标配。
+**一句话理解**：KV Cache 将历史 Token 的 Key 和 Value 缓存起来，避免每次生成新 Token 时重复计算，是 LLM 推理最重要的加速技术。
 
-- **显存挑战 (The Memory Wall)**
-  虽然快，但 KV Cache 极度消耗显存。缓存大小计算公式：
+**为什么需要 KV Cache？**
 
-$$\text{Size} \approx 2 \times \text{layers} \times \text{tokens} \times \text{hidden}_{\text{dim}} \times \text{precision}_{\text{bytes}}$$
+LLM 推理本质是 **自回归生成（Next-token Prediction）**。例如生成 `"I love machine learning"`：
+1. `I` → `love`
+2. `I love` → `machine`
+3. `I love machine` → `learning`
 
-  例如一个 7B 模型（4096 上下文），KV Cache 可能占用 3GB - 5GB 显存。
-  **工程优化方案**：
-  - **Paged KV Cache (vLLM)**：解决显存碎片。
-  - **量化 (KV Cache Quantization)**：如使用 FP8/INT8 存储。
-  - **Prefix Cache**：共享公共前缀缓存。
+每生成一个新 Token，都要执行一次 Forward。在计算 Attention 时，若无缓存，生成第 $n$ 个 Token 需要重新计算前 $n-1$ 个 Token 的 K 和 V，计算量呈 $O(n^2)$ 增长。
 
-- **直观类比：做数学题的草稿纸**
-  - **无草稿纸**：每算下一步都要重新推导前面所有的步骤。
-  - **有草稿纸**：只需在前面已有的结果上继续往下算，保存了历史计算成果。
+**核心思想：缓存不变项**
 
-### 4. Add & Norm (残差连接与层归一化)
-- **Add (残差连接)**: 借鉴 ResNet 思想，将子层（Attention 或 Feed Forward）的输入直接与其输出相加（$x + \text{Sublayer}(x)$）。这有助于缓解深层网络中的梯度消失问题，使训练更稳定。
-- **Norm (层归一化)**: 在每一层之后进行 Layer Normalization，将神经元的激活值归一化到均值为 0、方差为 1 的分布，加速模型收敛。
+关键观察：**历史 Token 的 K 和 V 在生成后续 Token 时不会改变**。因此可以缓存：
+- $\text{K-cache} = [K_1, K_2, \dots, K_{n-1}]$
+- $\text{V-cache} = [V_1, V_2, \dots, V_{n-1}]$
 
-#### 4.1 归一化变体 (Normalization Variants)
-- **LayerNorm (LN)**：标准层归一化。在每层对所有神经元的输出进行规范化。在处理序列数据等不适合批处理的情况下，可以作为替代方案使用。
-- **RMSNorm (Root Mean Square Layer Normalization)**：只做缩放不做平移，计算开销更小。
-  - **应用**：LLaMA 系列、DeepSeek、Gemma。
-- **DeepNorm**：一种特殊的初始化和归一化策略，允许训练极深（如 1000 层）的 Transformer。
-  - **应用**：GLM-130B。
-- **Batch Normalization (BN)**：批归一化。通过在每个批次中对输入数据进行规范化，加速网络收敛，降低对初始化和学习率的敏感性，具有一定的正则化效果。
-- **Group Normalization (GN)**：组归一化。介于 BN 和 LN 之间的方法，将输入数据分成多个小组并对组内进行归一化，提高网络学习能力。
+生成新 Token 时，只需计算当前 Token 的 $`Q_{\text{new}}`$，然后与缓存进行计算：
+
+$$\text{Attention}(Q_{\text{new}}, K_{\text{cache}}, V_{\text{cache}})$$
+
+**性能提升：$O(n^2) \to O(n)$**
+
+| 模式 | 每步计算量 | 总复杂度 |
+| :--- | :--- | :--- |
+| 无 KV Cache | 重算全部 Token | $O(n^2)$ |
+| 有 KV Cache | 只算当前 Token | $O(n)$ |
+
+**显存挑战（The Memory Wall）**
+
+KV Cache 极度消耗显存，计算公式：
+
+$$\text{Size} \approx 2 \times \text{layers} \times \text{tokens} \times \text{hidden\_dim} \times \text{precision\_bytes}$$
+
+例如 7B 模型（4096 上下文），KV Cache 可能占用 3-5 GB 显存。
+
+**工程优化方案**：
+| 方案 | 原理 |
+| :--- | :--- |
+| **Paged KV Cache (vLLM)** | 解决显存碎片，类似操作系统的虚拟内存分页 |
+| **KV Cache 量化** | 使用 FP8/INT8 存储，减少一半显存 |
+| **Prefix Cache** | 共享公共前缀缓存（如系统提示词） |
+
+**直观类比**：
+- 无 KV Cache = 做数学题没有草稿纸，每算下一步都要重新推导前面所有步骤。
+- 有 KV Cache = 有草稿纸，只需在已有结果上继续往下算。
+
+---
+
+### 4. Add & Norm（残差连接与层归一化）
+
+- **Add（残差连接）**：借鉴 ResNet 思想，将子层的输入直接与其输出相加（$x + \text{Sublayer}(x)$）。缓解深层网络中的梯度消失问题，使训练更稳定。
+- **Norm（层归一化）**：将激活值归一化到均值为 0、方差为 1 的分布，加速模型收敛。
+
+#### 4.1 归一化方法对比
+
+| 方法 | 原理 | 代表模型 |
+| :--- | :--- | :--- |
+| **LayerNorm (LN)** | 对每层所有神经元的输出进行均值-方差规范化 | 原始 Transformer、BERT |
+| **RMSNorm** | 只做缩放不做平移（去掉均值中心化），计算开销更小 | LLaMA、DeepSeek、Gemma |
+| **DeepNorm** | 特殊的初始化+归一化策略，支持训练极深（1000+层）网络 | GLM-130B |
+| **BatchNorm (BN)** | 在 batch 维度上规范化，对序列数据不太适用 | CV 领域为主 |
+| **GroupNorm (GN)** | 介于 BN 和 LN 之间，分组归一化 | CV 领域为主 |
 
 ![Different Normalization](../resource/different_Normalization.webp)
 
-#### 4.2 归一化位置 (Normalization Position)
-- **Post-LN**: Norm 放在残差连接之后。容易导致梯度爆炸，训练不稳定，但性能可能略优。
-  - **应用**: 原始 Transformer、BERT。
-- **Pre-LN**: Norm 放在子层之前。训练极其稳定，是大模型的标准配置。
-  - **应用**: GPT-2、LLaMA、Baichuan。
-- **Sandwich-LN**: 在 Pre-LN 基础上，在子层输出后再加一层 LN，防止值溢出。
-  - **应用**: CogView。
+#### 4.2 归一化位置
 
-### 5. Feed Forward (前馈神经网络)
-- **结构**: 每个位置独立经过一个两层的全连接网络（MLP），中间包含一个非线性激活函数。
-- **作用**: 提供非线性映射能力，对注意力机制提取的特征进行进一步的变换和抽象。
-- **公式**:
+| 位置 | 特点 | 代表模型 |
+| :--- | :--- | :--- |
+| **Post-LN** | Norm 在残差连接之后；可能训练不稳定（梯度爆炸），但性能可能略优 | 原始 Transformer、BERT |
+| **Pre-LN** | Norm 在子层之前；训练极其稳定，**大模型标准配置** | GPT-2、LLaMA、Baichuan |
+| **Sandwich-LN** | Pre-LN 基础上，子层输出后再加一层 LN，防止值溢出 | CogView |
 
-$$
-\text{FFN}(x) = \max(0, xW_1 + b_1)W_2 + b_2
-$$
+---
 
-#### 5.1 激活函数变体 (Activation Variants)
-- **ReLU**: 原始 Transformer 使用。
-- **GELU (Gaussian Error Linear Unit)**: 平滑版的 ReLU，在零点附近具有非零梯度。
-  - **应用**: BERT、GPT 系列。
-- **SwiGLU**: GLU (Gated Linear Unit) 的变体，使用 Swish 激活函数。显著提升模型表现。
-  - **应用**: LLaMA、PaLM、Baichuan。
+### 5. Feed Forward Network（前馈神经网络）
 
-#### 5.2 架构变体 (Architecture Variants)
-- **Standard FFN**: 两层全连接。
-- **MoE (Mixture of Experts)**: 将 FFN 替换为多个专家网络，通过路由（Router）选择部分专家激活。
-  - **优点**: 极大增加模型参数量的同时，保持较低的推理计算量。
-  - **代表模型**: GPT-4 (据传)、Mixtral、DeepSeek-V3。
+- **结构**：每个位置独立经过一个两层的全连接网络（MLP），中间包含非线性激活函数。
+- **作用**：提供非线性映射能力，对注意力机制提取的特征进行进一步的变换和抽象。
+- **公式**：
 
-##### 5.2.1 MoE 核心组件
-混合专家模型主要由两个关键部分组成：
-- **稀疏 MoE 层 (Sparse MoE Layer)**：这些层代替了传统 Transformer 模型中的前馈网络 (FFN) 层。MoE 层包含若干“专家”(Experts，例如 8 个)，每个专家本身是一个独立的神经网络（通常也是 FFN）。
-- **门控网络或路由 (Gating Network / Router)**：决定哪些词元 (Token) 被分发到哪个专家。
-  - 例如：“More” 令牌可能被发送到 Expert 2，而 “Parameters” 词元被发送到 Expert 1。
-  - 一个词元有时可以分发给多个专家制。路由方式是 MoE 的核心，路由器由可学习参数组成，与网络其他部分同步预训练。
+$$\text{FFN}(x) = \max(0, xW_1 + b_1)W_2 + b_2$$
+
+> **关键理解**：注意力层负责「信息聚合」（决定看哪些 Token），FFN 负责「信息变换」（决定怎么处理看到的信息）。一个类比：注意力是"开会讨论"，FFN 是"独立思考"。
+
+#### 5.1 激活函数变体
+
+| 激活函数 | 特点 | 代表模型 |
+| :--- | :--- | :--- |
+| **ReLU** | 原始 Transformer 使用，简单高效 | 原始 Transformer |
+| **GELU** | 平滑版 ReLU，零点附近具有非零梯度 | BERT、GPT 系列 |
+| **SwiGLU** | GLU 的变体 + Swish 激活，显著提升表现 | LLaMA、PaLM、Baichuan |
+
+#### 5.2 MoE（混合专家模型）
+
+MoE 将 FFN 替换为多个专家网络，通过路由（Router）选择部分专家激活，实现 **参数量大但计算量小** 的效果。
+
+##### 核心组件
+
+- **稀疏 MoE 层**：包含若干"专家"（如 8 个），每个专家是一个独立的 FFN。
+- **门控网络 / 路由（Router）**：决定哪些 Token 被分发到哪个专家。路由器由可学习参数组成，与网络其他部分同步预训练。
 
 ![MoE Router](../resource/MOE_Architecture.png)
 
-##### 5.2.2 MoE 的优缺点
-**优点：**
-- **降低推理耗时**：
-    - 在 Transformer 的推理过程中，FFN 的权重维度较大 ($`d_{\text{model}} \times d_{\text{ff}}`$)，耗时占比高。
-    - MoE 虽然总参数量更多，但推理时仅激活少数专家，因此实际计算量（FLOPs）远小于同等规模的稠密模型。
-- **参数量扩展性**：可以在不增加计算成本的前提下，通过增加专家数量来极大提升模型的知识容量。
+##### MoE 的优缺点
 
-**缺点：**
-- **显存占用大**：需要提前加载所有专家的参数，对显存容量要求极高。
-- **训练/微调困难**：稀疏模型（Sparse Model）更容易过拟合，且路由器的负载均衡（Load Balancing）难以优化。
-- **目前尚不成熟**：在微调（Fine-tuning）阶段的稳定性不如稠密模型。
+| 维度 | 说明 |
+| :--- | :--- |
+| **优点：降低推理耗时** | FFN 权重维度大（$`d_{\text{model}} \times d_{\text{ff}}`$），MoE 推理时仅激活少数专家，实际 FLOPs 远小于同等规模稠密模型 |
+| **优点：参数扩展性** | 可以在不增加计算成本的前提下，通过增加专家数量极大提升知识容量 |
+| **缺点：显存占用大** | 需要提前加载所有专家参数 |
+| **缺点：训练困难** | 容易过拟合，路由器的负载均衡（Load Balancing）难以优化 |
+| **缺点：微调不稳定** | 在 Fine-tuning 阶段的稳定性不如稠密模型 |
 
+**代表模型**：GPT-4（据传）、Mixtral、DeepSeek-V3。
 
-### 6. Linear (线性层)
-- **作用**: 在解码器的顶层，通过一个全连接层将隐藏状态映射到词表大小（Vocabulary Size）的维度。每个维度的数值代表对应词的未归一化得分（Logits）。
+---
 
-### 7. SoftMax (归一化层)
-- **作用**: 将 Linear 层的输出 Logits 转换为概率分布。通过指数运算使得分高的词概率更大，且所有词的概率之和为 1，从而选出概率最高的词作为预测结果。
+### 6. Linear & Softmax（输出层）
 
+- **Linear 层**：在解码器顶层，通过一个全连接层将隐藏状态映射到词表大小（Vocabulary Size）的维度。每个维度的数值代表对应词的未归一化得分（**Logits**）。
+- **Softmax 层**：将 Logits 转换为概率分布。通过指数运算使得分高的词概率更大，且所有词的概率之和为 1，最终输出下一个 Token 的预测概率。
 
-# 大模型生成参数配置
-目前主流的大型语言模型 (LLM) 在生成文本时，主要采用以下四种解码策略：**贪心搜索 (Greedy search)**、**波束搜索 (Beam search)**、**Top-K 采样 (Top-K sampling)** 以及 **Top-p 采样 (Top-p sampling)**。
+---
 
-## 1. 贪心搜索 (Greedy Search)
-贪心搜索在每个时间步 $t$ 都简单地选择概率最高的 Token 作为当前输出：
+## 四、三大架构范式
+
+基于 Transformer 的模型根据使用的组件不同，形成了三大架构范式：
+
+| 范式 | 结构 | 预训练目标 | 典型任务 | 代表模型 |
+| :--- | :--- | :--- | :--- | :--- |
+| **Encoder-Only** | 仅编码器 | MLM（掩码语言模型）：随机遮蔽部分 Token，预测被遮蔽的 Token | 文本分类、NER、语义理解 | BERT、RoBERTa、ALBERT |
+| **Decoder-Only** | 仅解码器 | CLM（因果语言模型）：给定前文，预测下一个 Token | 文本生成、对话、代码生成 | GPT 系列、LLaMA、DeepSeek |
+| **Encoder-Decoder** | 完整结构 | Seq2Seq（如 Span Corruption）：编码输入，解码输出 | 翻译、摘要、问答 | T5、BART、mBART |
+
+> **当前趋势**：Decoder-Only 架构已成为大模型的绝对主流。GPT-4、Claude、LLaMA、DeepSeek 等均采用此架构。原因在于其自回归生成范式天然适合对话和通用生成任务，且 Scaling Law 表现最佳。
+
+---
+
+## 五、训练机制
+
+### 5.1 损失函数
+
+**交叉熵损失（Cross-Entropy Loss）** 是 Transformer 最常用的训练目标：
+
+$$\mathcal{L} = -\sum_{t=1}^{T} \log P(w_t | w_{<t})$$
+
+即最大化模型对每个正确 Token 的预测概率。
+
+### 5.2 优化器
+
+| 优化器 | 特点 | 使用场景 |
+| :--- | :--- | :--- |
+| **Adam** | 自适应学习率，结合动量和 RMSProp | 原始 Transformer |
+| **AdamW** | Adam + 权重衰减（Weight Decay），正则化效果更好 | BERT、GPT 系列 |
+| **Adafactor** | 节省内存的 Adam 变体 | T5、PaLM |
+
+### 5.3 学习率调度
+
+原始 Transformer 提出了经典的 **Warmup + Decay** 策略：
+
+$$lr = d_{\text{model}}^{-0.5} \cdot \min(\text{step}^{-0.5}, \text{step} \cdot \text{warmup\_steps}^{-1.5})$$
+
+- **Warmup 阶段**：学习率从 0 线性增长到峰值，避免训练初期梯度不稳定。
+- **Decay 阶段**：学习率逐步衰减。
+- 现代大模型常用 **Cosine Decay**（余弦退火），更平滑。
+
+### 5.4 正则化技术
+
+| 技术 | 原理 | 位置 |
+| :--- | :--- | :--- |
+| **Dropout** | 训练时随机丢弃部分神经元，防止过拟合 | Attention 权重、FFN 输出、Embedding |
+| **Label Smoothing** | 将 one-hot 标签软化（如 0.9/0.1），防止模型过度自信 | 损失函数 |
+| **Weight Decay** | 对权重施加 L2 正则化 | 优化器（AdamW） |
+
+---
+
+## 六、解码策略与生成参数
+
+LLM 在生成文本时，主要采用以下解码策略：
+
+### 6.1 贪心搜索（Greedy Search）
+
+每个时间步选择概率最高的 Token：
 
 $$w_{t} = \text{argmax}_{w} P(w | w_{1:t-1})$$
 
-| 初始词 | 第一步候选及概率 | 第二步候选及概率 |
-| :--- | :--- | :--- |
-| **The** | nice (0.5)、dog (0.3)、car (0.1) | is (0.4)、drives (0.5)、turns (0.2)<br>has (0.9)、and (0.05)、runs (0.05)<br>woman (0.4)、house (0.3)、guy (0.3) |
-
 ![Greedy search](../resource/greedy_search.png)
 
-从单词 **The** 开始，算法在第一步贪心地选择条件概率最高的词 **nice** 作为输出，依此类推。最终生成的序列为 `(The, nice, woman)`，其联合概率为 $0.5 \times 0.4 = 0.2$。
-
-使用 `transformers` 库进行贪心搜索的示例如下（默认配置）：
+从 **The** 开始，算法贪心地选择条件概率最高的词 **nice**，然后 **woman**。最终序列 `(The, nice, woman)` 联合概率为 $0.5 \times 0.4 = 0.2$。
 
 ```python
-import tensorflow as tf
-from transformers import GPT2LMHeadModel, GPT2Tokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
-tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
-model = GPT2LMHeadModel.from_pretrained("gpt2", pad_token_id=tokenizer.eos_token_id)
+tokenizer = AutoTokenizer.from_pretrained("gpt2")
+model = AutoModelForCausalLM.from_pretrained("gpt2")
 
-# 编码上下文
-input_ids = tokenizer.encode('I enjoy walking with my cute dog', return_tensors='tf')
-
-# 生成文本，直到长度达到 50
+input_ids = tokenizer.encode('I enjoy walking with my cute dog', return_tensors='pt')
 greedy_output = model.generate(input_ids, max_length=50)
 
-print("Output:\n" + 100 * '-')
 print(tokenizer.decode(greedy_output[0], skip_special_tokens=True))
 ```
 
-**Output**:
+**典型输出**（注意重复问题）：
 ```text
-I enjoy walking with my cute dog, but I'm not sure if I'll ever be able to 
+I enjoy walking with my cute dog, but I'm not sure if I'll ever be able to
 walk with my dog. I'm not sure if I'll ever be able to walk with my dog.
-I'm not sure if I'll
 ```
 
-**缺点分析**：
-贪心搜索的主要问题是容易陷入局部最优，错过隐藏在低概率词后面的高概率词。例如：在 $t=1$ 时，虽然 **dog** (0.3) 低于 **nice** (0.5)，但 **dog** 之后的 **has** 概率极高 (0.9)，其序列 `(The, dog, has)` 的联合概率为 $0.3 \times 0.9 = 0.27$，优于贪心搜索的结果 (0.2)。此外，贪心搜索极易导致生成的文本出现循环重复。
+**缺点**：容易陷入局部最优，错过隐藏在低概率词后面的高概率序列。例如 `(The, dog, has)` 的联合概率为 $0.3 \times 0.9 = 0.27 > 0.2$。此外，极易导致文本循环重复。
 
-## 2. 波束搜索 (Beam Search)
-波束搜索通过在每个时间步保留最可能的 `num_beams` 个词（假设为 2），从而降低丢失高概率序列的风险：
+### 6.2 波束搜索（Beam Search）
+
+通过在每个时间步保留最可能的 `num_beams` 个候选序列，降低丢失高概率序列的风险。
 
 | 初始词 | 分支 1 (概率) | 分支 2 (概率) | 最终选择 |
 | :--- | :--- | :--- | :--- |
-| **The** | nice (0.5) → woman (0.4) | dog (0.3) → has (0.9) | **(The, dog, has)** |
-| **序列概率** | 0.2 | **0.36** | (更优序列) |
-
-在时间步 1，波束搜索同时跟踪 `(The, nice)` 和 `(The, dog)`。到时间步 2，它发现序列 `(The, dog, has)` 的联合概率 (0.36) 高于 `(The, nice, woman)` (0.2)，成功找到了更优路径。
-
-### 基础用法
-设置 `num_beams > 1` 和 `early_stopping=True`：
+| **The** | nice (0.5) → woman (0.4) = 0.20 | dog (0.3) → has (0.9) = **0.27** | **(The, dog, has)** |
 
 ```python
-# 激活波束搜索
 beam_output = model.generate(
-    input_ids, 
-    max_length=50, 
-    num_beams=5, 
-    early_stopping=True
-)
-
-print("Output:\n" + 100 * '-')
-print(tokenizer.decode(beam_output[0], skip_special_tokens=True))
-```
-
-### 优化：n-gram 惩罚
-为了解决重复问题，可以引入 `no_repeat_ngram_size`。它通过将已出现的 n-gram 候选词概率设为 0 来强制不重复。
-
-```python
-# 设置 no_repeat_ngram_size=2，确保任意 2-gram 不重复出现
-beam_output = model.generate(
-    input_ids, 
-    max_length=50, 
-    num_beams=5, 
-    no_repeat_ngram_size=2, 
-    early_stopping=True
+    input_ids, max_length=50, num_beams=5, early_stopping=True
 )
 ```
 
-**注意**：n-gram 惩罚需谨慎使用。例如在生成关于“纽约 (New York)”的文章时，若设置 `no_repeat_ngram_size=2`，则该地名只能出现一次。
+**优化：n-gram 惩罚**
 
-### 局限性
-尽管波束搜索比贪心搜索更稳健，但在开放域文本生成（如对话、故事）中仍有不足：
-1.  **惊喜度低**：波束搜索倾向于生成最可能的、中规中矩的词，这往往使生成的文本显得枯燥、不具“人性”。
-2.  **长度偏差**：在生成长度不固定的任务中，波束搜索难以平衡。
-3.  **重复风险**：即便有惩罚机制，依然难以完全消除循环生成的倾向。
+通过 `no_repeat_ngram_size` 将已出现的 n-gram 候选词概率设为 0：
 
-下图展示了人类文本与波束搜索生成文本的概率分布差异：人类语言的“惊喜度”（概率波动）远高于波束搜索：
+```python
+beam_output = model.generate(
+    input_ids, max_length=50, num_beams=5,
+    no_repeat_ngram_size=2, early_stopping=True
+)
+```
 
+> **注意**：n-gram 惩罚需谨慎。例如生成关于"New York"的文章时，`no_repeat_ngram_size=2` 会导致该地名只能出现一次。
+
+**波束搜索的局限性**：
+1. **惊喜度低**：倾向于生成中规中矩的文本，缺乏"人性"。
+2. **长度偏差**：难以平衡不同长度的序列。
+3. **重复风险**：即便有惩罚，仍难以完全消除循环生成。
+
+人类文本的"惊喜度"（概率波动）远高于波束搜索：
 ```text
-          BeamSearch vs Human (Surprise Level)
 P (Probability)
 1.0 ─┐
 0.8 ─┤          /--\      Human (High Variance)
@@ -353,108 +547,69 @@ P (Probability)
 0.0 ─┴──────────────────────────────────────
       0  20  40  60  80  100 (Timestep)
 ```
-因此，若希望生成的文本更有创意，可引入随机性。
 
-## 3. 随机采样 (Sampling)
-采样意味着根据当前条件概率分布随机选择下一个 Token：
+### 6.3 随机采样（Sampling）
+
+根据当前条件概率分布随机选择下一个 Token：
 
 $$w_{t} \sim P(w | w_{1:t-1})$$
 
-以初始词 **The** 为例，采样过程如下：
-
-| 初始词 | 采样候选及概率 | 生成序列 (示例) |
-| :--- | :--- | :--- |
-| **The** | nice (0.5)、dog (0.3)、car (0.1)、is (0.05) | **The → car → drives** |
-
-采样引入了非确定性，使生成的文本更多样。
-
-### 基础用法
-在 `transformers` 中设置 `do_sample=True`：
-
 ```python
-# 设置随机种子以复现结果
-tf.random.set_seed(0)
+import torch
+torch.manual_seed(0)
 
-# 激活采样，并关闭 top_k (通过设为 0)
 sample_output = model.generate(
-    input_ids, 
-    do_sample=True, 
-    max_length=50, 
-    top_k=0
+    input_ids, do_sample=True, max_length=50, top_k=0
 )
 ```
 
-**问题**：直接采样往往会导致文本不连贯，甚至出现乱码（如 `new hand sense`），这是因为低概率的词被意外选中。这也是导致大模型输出 JSON 等结构化数据时格式不稳定的根源（详见实战案例：[LLM输出JSON稳定性实战.md](../../资料/网页图书资料/model/LLM输出JSON稳定性实战.md)）。
+**问题**：直接采样可能导致文本不连贯（低概率词被意外选中），也是大模型输出 JSON 等结构化数据格式不稳定的根源。
 
-### 优化：温度调节 (Temperature)
-通过 **Temperature ($T$)** 缩放 Softmax 分布，可以调节生成的“创造力”：
+### 6.4 温度调节（Temperature）
+
+通过 Temperature $T$ 缩放 Softmax 分布，调节生成的"创造力"：
 
 $$P_i = \frac{\exp(z_i / T)}{\sum_j \exp(z_j / T)}$$
 
--   **低温度 ($T < 1$)**：使分布更“尖锐”，高概率词概率更高，结果更保守连贯。
--   **高温度 ($T > 1$)**：使分布更“平坦”，低概率词机会增加，结果更多样但也更易乱码。
--   **当 $T \to 0$**：退化为贪心搜索。
+| 温度 | 效果 |
+| :--- | :--- |
+| $T < 1$（低温） | 分布更"尖锐"，高概率词占主导，结果保守连贯 |
+| $T > 1$（高温） | 分布更"平坦"，低概率词机会增加，结果多样但可能乱码 |
+| $T \to 0$ | 退化为贪心搜索 |
 
-```python
-# 设置 temperature=0.7 使生成更平稳
-sample_output = model.generate(
-    input_ids, 
-    do_sample=True, 
-    max_length=50, 
-    top_k=0, 
-    temperature=0.7
-)
-```
+### 6.5 Top-K 采样
 
-## 4. Top-K 采样
-Top-K 采样通过将采样池限制在概率最大的 $K$ 个词中，并重新归一化概率，从而过滤掉低概率的“长尾”噪声词。
+将采样池限制在概率最大的 $K$ 个词中，过滤长尾噪声。
 
-### Top-K 局限性
-固定 $K$ 值无法适应不同的概率分布：
--   **分布陡峭时**：前 1-2 个词就占据了绝大部分概率，设置 $K=50$ 会引入过多的干扰词。
--   **分布平坦时**：前 50 个词的概率可能都很接近，设置 $K=50$ 又会限制模型的发挥。
+**局限性**：固定 $K$ 无法适应不同概率分布——分布陡峭时 $K=50$ 引入太多干扰，分布平坦时 $K=50$ 又限制发挥。
 
-## 5. Top-p (核) 采样 (Nucleus Sampling)
-Top-p 采样解决了固定 $K$ 的问题。它根据累积概率动态选择采样池：
-1.  将词按概率降序排列。
-2.  选取最小的集合 $`V_{\text{top-p}}`$，使得其累积概率和 $\ge p$。
+### 6.6 Top-p 采样（核采样 / Nucleus Sampling）
 
-### 动态采样池对比
-假设 $p=0.92$：
--   **预测较难时**（如 $P(w | \text{The})$）：分布平坦，采样池可能包含 100 个词。
--   **预测较易时**（如 $P(w | \text{The, car})$）：分布陡峭，采样池可能仅包含 2-3 个词。
-
-**分布可视化**：
+根据累积概率动态选择采样池，解决固定 $K$ 的问题：
+1. 将词按概率降序排列。
+2. 选取最小的集合 $`V_{\text{top-p}}`$，使其累积概率 $\geq p$。
 
 ```text
-       Flat Distribution (p=0.92)        Sharp Distribution (p=0.92)
-P 1.0 ─┐                          P 1.0 ─┐
-       │   ________                      │   __
-       │  |        | (Pool: 50 tokens)   │  |  | (Pool: 3 tokens)
-       └─┴──────────┴──────              └─┴──┴────────
+     Flat Distribution (p=0.92)        Sharp Distribution (p=0.92)
+P    ┌────────────────              P    ┌────────────────
+     │   ________                        │   __
+     │  |        | → Pool: 50+          │  |  | → Pool: 2-3
+     └─┴──────────┴──────              └─┴──┴────────
 ```
 
-### 基础用法
-在 `transformers` 中设置 `0 < top_p < 1`：
-
 ```python
-# 激活 Top-p 采样
 sample_output = model.generate(
-    input_ids, 
-    do_sample=True, 
-    max_length=50, 
-    top_p=0.92, 
-    top_k=0
+    input_ids, do_sample=True, max_length=50, top_p=0.92, top_k=0
 )
 ```
 
-## 6. 综合建议：Top-K + Top-p + Temperature
-在实际应用中，通常会将三者结合使用，以达到最佳的平衡。
+### 6.7 综合建议：Top-K + Top-p + Temperature
+
+实际应用中通常将三者结合使用：
 
 ```python
 from transformers import GenerationConfig
 
-# 使用 GenerationConfig 进行统一管理
 gen_config = GenerationConfig(
     do_sample=True,
     top_k=50,
@@ -468,71 +623,69 @@ gen_config = GenerationConfig(
 output = model.generate(input_ids, generation_config=gen_config)
 ```
 
-## 7. 解码策略对比总结
+### 6.8 解码策略对比总结
 
 | 策略 | 核心思想 | 优点 | 缺点 | 适用场景 |
 | :--- | :--- | :--- | :--- | :--- |
-| **贪心搜索** | 每步取最高概率 | 速度快，逻辑简单 | 易陷入局部最优，易重复 | 确定性任务（如公式推导） |
+| **贪心搜索** | 每步取最高概率 | 速度快，确定性强 | 易陷入局部最优，易重复 | 确定性任务（公式推导） |
 | **波束搜索** | 保留多条路径 | 序列联合概率高 | 缺乏多样性，计算量大 | 翻译、摘要、QA |
-| **Top-K 采样** | 限制前 K 个词 | 过滤长尾噪声 | $K$ 值固定，适应性差 | 创意写作、故事生成 |
+| **Top-K 采样** | 限制前 K 个词 | 过滤长尾噪声 | K 值固定，适应性差 | 创意写作、故事生成 |
 | **Top-p 采样** | 动态累积概率 | 适应性强，文本连贯 | 采样池大小不确定 | 通用对话、开放式生成 |
-| **受限解码** | FSM 状态机约束 | **100% 格式正确** | 首次编译延迟 | **JSON 提取、结构化输出** |
+| **受限解码** | FSM/CFG 约束 | **100% 格式正确** | 首次编译延迟 | **JSON 提取、结构化输出** |
 
-> **提示**：在生产环境中，若需模型稳定返回 JSON 格式，传统的贪心或采样策略往往不够彻底。建议参考 [LLM输出JSON稳定性实战.md](../../资料/网页图书资料/model/LLM输出JSON稳定性实战.md) 了解 **Structured Output (结构化输出)** 的实现原理与最佳实践。
+---
 
-## 8. 受限解码深度解析 (FSM vs CFG)
+## 七、受限解码深度解析
 
-受限解码的工程实现主要基于两种计算模型：**有限状态机（Finite State Machine，FSM）** 和 **上下文无关文法（Context-Free Grammar，CFG）**。
+受限解码的工程实现主要基于两种计算模型：**有限状态机（FSM）** 和 **上下文无关文法（CFG）**。
 
-### 8.1 FSM 与 CFG 核心对比
+### 7.1 FSM 与 CFG 核心对比
 
-| 特性 | **FSM (有限状态机)** | **CFG (上下文无关文法)** |
+| 特性 | **FSM（有限状态机）** | **CFG（上下文无关文法）** |
 | :--- | :--- | :--- |
-| **定义** | 有限状态自动机，通过状态转移判断输入合法性 | 通过递归规则描述语言结构的语法系统 |
-| **特点** | 无栈结构，状态数固定 | 支持递归，带栈自动机 (Pushdown Automaton) |
-| **表达能力** | 正则语言 (Regular Language) | 上下文无关语言 (Context-Free Language) |
-| **适合场景** | 正则表达式、固定格式、简单 JSON、Tool Call 参数 | 复杂 JSON、SQL、编程语言、复杂 DSL |
-| **优点** | 推理速度快，实现简单，工程稳定 | 表达能力强，支持无限嵌套 |
+| **特点** | 无栈结构，状态数固定 | 支持递归，带栈自动机 |
+| **表达能力** | 正则语言 | 上下文无关语言 |
+| **适合场景** | 正则表达式、固定格式、简单 JSON | 复杂 JSON、SQL、编程语言 |
+| **优点** | 推理速度快，实现简单 | 表达能力强，支持无限嵌套 |
 | **缺点** | 无法表达无限嵌套结构 | 推理开销大，实现复杂 |
 
-### 8.2 在 LLM 受限解码中的作用
+### 7.2 LLM 结构化输出流程
 
-LLM 结构化输出的通用工程流程如下：
-`Schema / Grammar` → `CFG 或 FSM 编译` → `生成 Token Mask` → `Logit Masking` → `受限解码输出`
+```text
+Schema / Grammar → CFG 或 FSM 编译 → 生成 Token Mask → Logit Masking → 受限解码输出
+```
 
-**核心作用**：在生成每个 Token 时，动态限制模型只能输出符合语法规则的 Token。从而保证：
-- JSON 100% 合法
-- Tool Call 参数结构正确
-- SQL 语法无误
+在生成每个 Token 时，动态限制模型只能输出符合语法规则的 Token，保证 JSON 100% 合法、Tool Call 参数结构正确、SQL 语法无误。
 
-### 8.3 业界方案分布
+### 7.3 业界方案分布
 
 | 方案类别 | 厂商 / 框架 | 应用场景 |
 | :--- | :--- | :--- |
-| **CFG 方案** | **OpenAI** | Structured Outputs, JSON Schema, Tool Calling |
-| | **Anthropic** | Claude 的 Tool Use, Structured Output (Grammar-based) |
-| | **Microsoft** | Guidance, Semantic Kernel |
-| **FSM / Regex 方案** | **vLLM** | Guided Decoding (FSM/Regex/JSON) |
-| | **Hugging Face** | Transformers Constrained Decoding, Outlines |
-| | **Mistral AI** | Function Calling, Structured Outputs |
+| **CFG** | OpenAI | Structured Outputs, JSON Schema, Tool Calling |
+| | Anthropic | Claude Tool Use, Structured Output |
+| | Microsoft | Guidance, Semantic Kernel |
+| **FSM / Regex** | vLLM | Guided Decoding (FSM/Regex/JSON) |
+| | Hugging Face | Constrained Decoding, Outlines |
+| | Mistral AI | Function Calling, Structured Outputs |
 
-### 8.4 工程实践建议
+### 7.4 工程实践建议
 
-实际系统中通常根据复杂度和性能要求进行选择：
-- **简单 JSON / Regex / 固定格式**：优先选择 **FSM**。
-- **复杂 JSON Schema / SQL / DSL**：必须使用 **CFG**。
-- **混合模式**：许多现代系统（如 OpenAI）采用 **CFG → 编译 → FSM** 的链路，既保证了表达能力，又兼顾了推理速度。
+- **简单 JSON / Regex / 固定格式** → 优先选择 **FSM**
+- **复杂 JSON Schema / SQL / DSL** → 必须使用 **CFG**
+- **混合模式**：现代系统（如 OpenAI）采用 **CFG → 编译 → FSM** 链路，兼顾表达能力与推理速度
 
-**一句话总结**：
-FSM 快但有限，适合简单约束；CFG 强但略慢，适合复杂嵌套。现代 LLM 的结构化输出本质上就是：**语言模型 + 语法约束解码 (FSM/CFG)**。
+> **一句话总结**：FSM 快但有限，适合简单约束；CFG 强但略慢，适合复杂嵌套。现代 LLM 的结构化输出本质上就是 **语言模型 + 语法约束解码（FSM/CFG）**。
 
-## 9. 实际业务应用示例
+---
+
+## 八、实际业务应用示例
 
 ### 场景 1：追求精确性的提取任务
-如从文本中提取关键信息，需要模型尽量保守：
+
+从文本中提取关键信息，需要模型尽量保守：
+
 ```python
-# 业务配置：低温度波束搜索
-output_texts = model.generate(
+output = model.generate(
     input_ids=input_ids,
     num_beams=5,
     do_sample=False,
@@ -542,10 +695,11 @@ output_texts = model.generate(
 ```
 
 ### 场景 2：追求多样性的创意生成
-如写诗、写故事，需要模型有更多发挥空间：
+
+写诗、写故事，需要模型有更多发挥空间：
+
 ```python
-# 业务配置：高温度 + Top-K + Top-p
-output_texts = model.generate(
+output = model.generate(
     input_ids=input_ids,
     do_sample=True,
     top_k=50,
@@ -554,3 +708,7 @@ output_texts = model.generate(
     repetition_penalty=1.1
 )
 ```
+
+### 场景 3：结构化输出
+
+需要模型稳定返回 JSON 格式时，传统的贪心或采样策略往往不够可靠，建议使用受限解码或框架原生的 Structured Output 功能。
