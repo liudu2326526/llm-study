@@ -226,18 +226,18 @@ RadixAttention 使用 **Radix Tree（基数树）** 来管理前缀缓存，Radi
 将 Prefill 和 Decode 分配到不同的 GPU 集群（或不同的 GPU 实例）上独立执行：
 
 ```
-                    ┌─────────────────────┐
-   用户请求 ──────→ │     调度器/路由      │
-                    └──────┬──────┬───────┘
-                           │      │
-                    ┌──────▼──┐ ┌─▼────────┐
-                    │ Prefill │ │  Decode   │
-                    │ 集群    │ │  集群     │
-                    │ (算力型) │ │ (带宽型)  │
-                    └────┬────┘ └─────▲────┘
-                         │            │
-                         └────────────┘
-                      KV Cache 传输 (通过高速互联)
+                ┌──────────────────────────┐
+  用户请求 ───→ │       调度器/路由         │
+                └─────┬────────────┬───────┘
+                      │            │
+               ┌──────▼──────┐ ┌──▼──────────┐
+               │   Prefill   │ │    Decode    │
+               │    集群     │ │     集群     │
+               │  (算力型)   │ │   (带宽型)   │
+               └──────┬──────┘ └──────▲──────┘
+                      │               │
+                      └───────────────┘
+                   KV Cache 传输 (高速互联)
 ```
 
 #### 工作流程
@@ -404,6 +404,39 @@ MQA:  Q1→K1,V1  Q2→K1,V1  Q3→K1,V1  Q4→K1,V1    (1组KV)
 - MQA：PaLM、StarCoder
 - GQA：LLaMA-2 70B（8 KV heads / 64 Q heads）、Mistral、Qwen-2
 
+### 2.3 Multi-head Latent Attention (MLA)
+
+DeepSeek-V2/V3 提出的注意力机制，通过**低秩联合压缩** KV Cache，在保持模型表达能力的同时大幅减少 KV Cache 显存占用。
+
+#### 核心思想
+
+MQA/GQA 通过减少 KV 头数来压缩 KV Cache，但这会损失模型容量。MLA 采用了不同的思路：**将 KV Cache 压缩到一个低维的潜在向量（Latent Vector）中**，推理时再通过上投影矩阵恢复出 K 和 V。
+
+$$
+c_t = W_{DKV} \cdot h_t \quad \text{(下投影：将隐藏状态压缩到低维潜在向量 } c_t \text{)}
+$$
+
+$$
+K_t = W_{UK} \cdot c_t, \quad V_t = W_{UV} \cdot c_t \quad \text{(上投影：从潜在向量恢复 K 和 V)}
+$$
+
+**KV Cache 中只需存储低维的 $c_t$**，而非完整的 K 和 V 向量。
+
+#### 与 MQA/GQA 对比
+
+| 方案 | KV Cache 压缩方式 | KV Cache 大小 | 模型表达能力 |
+| :--- | :--- | :--- | :--- |
+| **MHA** | 无压缩 | 1x（基准） | 最强 |
+| **GQA** | 减少 KV 头数（分组共享） | $\frac{g}{n_{\text{heads}}}$x | 略有损失 |
+| **MQA** | KV 头数降为 1 | $\frac{1}{n_{\text{heads}}}$x | 损失较大 |
+| **MLA** | 低秩压缩到潜在空间 | $\frac{d_c}{n_{\text{heads}} \times d_{\text{head}}}$x | 接近 MHA |
+
+#### 效果
+
+- DeepSeek-V2 中 KV Cache 压缩为 GQA 的 **~60%**，同时模型性能优于 GQA
+- 与吸收（Absorbed）优化结合后，上投影矩阵可融入 Attention 计算，无额外推理开销
+- 已被 vLLM、SGLang 等主流推理框架支持
+
 ---
 
 ## 3. 模型压缩与量化
@@ -441,6 +474,18 @@ MQA:  Q1→K1,V1  Q2→K1,V1  Q3→K1,V1  Q4→K1,V1    (1组KV)
 | INT8 | ~70 GB | 1×A100 80GB | ~1.5x |
 | INT4 (GPTQ/AWQ) | ~35 GB | 1×A100 40GB / 1×A6000 | ~2x |
 | INT4 (GGUF, CPU) | ~35 GB | 64GB RAM（无 GPU） | 0.05x-0.1x |
+
+### 3.4 KV Cache 量化与压缩
+
+除了对模型权重量化外，KV Cache 本身也可以压缩，从而在相同显存下支持更大的 Batch Size 或更长的上下文。
+
+| 方案 | 原理 | 特点 |
+| :--- | :--- | :--- |
+| **KV Cache INT8/FP8 量化** | 将 KV Cache 从 FP16 降为 INT8/FP8 存储，Attention 计算时反量化 | 实现简单，vLLM/TensorRT-LLM 已原生支持，几乎无损 |
+| **KIVI** | 对 Key Cache 逐 channel 量化、Value Cache 逐 token 量化，2-bit 极限压缩 | KV Cache 缩减至 1/8，长上下文场景收益显著 |
+| **Gear** | 利用低秩近似 + 稀疏残差补偿量化误差 | 在极低比特下保持较高精度 |
+| **KVQuant** | 逐通道 Key 量化 + 非均匀量化 + 预 RoPE Key 量化 | 针对 KV Cache 分布特点定制的量化方案 |
+| **Streaming LLM** | 仅保留 Attention Sink (前几个 Token) + 滑动窗口，丢弃中间 KV Cache | 支持无限长度流式生成，但会丢失中间信息 |
 
 ---
 
@@ -482,15 +527,40 @@ GPU0: Layer 0-19  →  GPU1: Layer 20-39  →  GPU2: Layer 40-59  →  GPU3: Lay
 - 存在流水线气泡（Pipeline Bubble），可通过 Micro-batch 缓解
 - 通常用于多机场景
 
-### 4.3 混合并行策略
+### 4.3 Expert Parallelism (专家并行, EP)
+
+针对 **MoE（Mixture-of-Experts）模型**（如 Mixtral、DeepSeek-V2/V3）的并行策略。MoE 模型的 FFN 层包含多个专家子网络，每个 Token 仅激活其中少数几个。
+
+**原理**：将不同的专家分配到不同的 GPU 上，Token 通过 All-to-All 通信路由到对应专家所在的 GPU。
+
+```
+EP (以 8 专家, 4 GPU 为例):
+
+GPU0: Expert 0, 1  ──┐
+GPU1: Expert 2, 3  ──┤  All-to-All: Token 根据 Router 结果
+GPU2: Expert 4, 5  ──┤  发送到对应专家所在的 GPU
+GPU3: Expert 6, 7  ──┘
+```
+
+**特点**：
+- 通信模式为 All-to-All，对网络带宽和延迟敏感
+- 通常与 TP/PP 组合使用：机内 TP + EP，机间 PP
+- 负载均衡是关键挑战——热门专家可能成为瓶颈
+
+### 4.4 混合并行策略
 
 生产环境通常组合使用：
 
 ```
-典型配置（4机32卡部署 70B 模型）：
+典型配置（4机32卡部署 70B Dense 模型）：
 - 机内: TP=8 (NVLink 高速互联)
 - 机间: PP=4 (InfiniBand 互联)
 - 可选: 配合 Continuous Batching 的数据并行
+
+典型配置（MoE 模型，如 DeepSeek-V3）：
+- 机内: TP + EP (NVLink)
+- 机间: PP + EP (InfiniBand)
+- 专家并行度取决于专家数量和 GPU 数量
 ```
 
 ---
@@ -553,11 +623,17 @@ GPU0: Layer 0-19  →  GPU1: Layer 20-39  →  GPU2: Layer 40-59  →  GPU3: Lay
   │
   ├── 2024.09 ── Mooncake: 生产级分离式推理架构 (Kimi)
   │
-  └── 2025+ ─── 趋势: 端到端编译优化、FP8/FP4 原生支持、
-                       更激进的投机解码、KV Cache 压缩
+  ├── 2024.12 ── DeepSeek-V3: MLA + FP8 训练推理一体化，MoE 大规模落地
+  │
+  ├── 2025.03 ── vLLM 0.7+: 支持 MLA、FP8 KV Cache、自动前缀缓存成熟
+  │
+  ├── 2025.06 ── KV Cache 压缩 (KIVI/Gear/KVQuant) 进入生产环境
+  │
+  └── 2025+ ─── 趋势: 端到端编译优化、FP4 原生支持、
+                       更激进的投机解码、长上下文 KV 管理
 ```
 
 ---
 > **相关文档**：
 > - 了解解码原理：[Transformer.md](./Transformer.md)
-> - 了解受限解码：[Transformer.md#8-受限解码深度解析-fsm-vs-cfg](./Transformer.md#L439)
+> - 了解受限解码：[Transformer.md#8-受限解码深度解析-fsm-vs-cfg](./Transformer.md#8-受限解码深度解析-fsm-vs-cfg)
