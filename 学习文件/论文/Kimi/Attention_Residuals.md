@@ -39,11 +39,14 @@ Consider a batch of input sequences with shape $B \times T \times d$, where B is
 ### 2.1 Training Deep Networks via Residuals
 #### Residual Learning
 Residual learning [12] proves to be a critical technique in training deep networks as it allows gradients to bypass transformations. Specifically, each layer updates the hidden state as:
+
 $$
 h_l = h_{l-1} + f_{l-1}(h_{l-1})
+
 $$
 
 Expanding this recurrence, the hidden state at layer l is the sum of the embedding and all preceding layer outputs: $h_{l}=h_{1}+\sum_{i=1}^{l-1} f_{i}(h_{i})$. The key insight behind residual connections is identity mapping: each layer preserves a direct path for both information and gradients to flow unchanged. During back-propagation, the gradient with respect to an intermediate hidden state is:
+
 $$
 \frac{\partial \mathcal{L}}{\partial h_l}
 =
@@ -53,18 +56,22 @@ $$
 \left(
 I + \frac{\partial f_j}{\partial h_j}
 \right)
+
 $$
 
 Expanding this product yields I plus higher-order terms involving the layer Jacobians $\partial f_{j} / \partial h_{j}$. The identity term is always preserved, providing a direct gradient path from the loss to any layer regardless of depth.
 
 #### Generalizing Residuals
 While effective, the fixed unit coefficients in the residual update treat every layer’s contribution uniformly, offering no mechanism to adapt the mixing across depth. Highway networks [45] relax this by introducing learned element-wise gates:
+
 $$
 h_l
 =
 \left(1 - g_l\right) \odot h_{l-1}
 + g_l \odot f_{l-1}(h_{l-1})
+
 $$
+
 where $g_{l} \in[0,1]^{d}$ interpolates between the transformation and the identity path. More generally, both are instances of a weighted recurrence $h_{l}=\alpha_{l} \cdot h_{l-1}+\beta_{l} \cdot f_{l-1}(h_{l-1})$, with residual setting $\alpha_{l}=\beta_{l}=1$ and Highway setting $\alpha_{l}=1-g_{l}, \beta_{l}=g_{l}$.
 
 #### Limitations
@@ -80,40 +87,40 @@ The limitations discussed above are reminiscent of similar bottlenecks in sequen
 
 ### The Duality of Time and Depth
 Like RNNs over time, residual connections compress all prior information into a single state $h_{l}$ over depth. For sequence modeling, the Transformer improved upon RNNs by replacing recurrence with attention [3, 52], allowing each position to selectively access all previous positions with data-dependent weights. We propose the same methodology for depth:
+
 $$
 h_l
 =
 \alpha_{0 \to l} \, h_1
 + \sum_{i=1}^{l-1} \alpha_{i \to l} \, f_i(h_i)
+
 $$
+
 where $\alpha_{i \to l}$ are layer-specific attention weights satisfying $\sum_{i=0}^{l-1} \alpha_{i \to l}=1$. Unlike sequence length (which can reach millions of tokens), network depth is typically modest ($L<1000$), making $O(L^{2})$ attention over depth computationally feasible. We call this approach Attention Residuals, abbreviated as AttnRes.
 
 ### 3.1 Full Attention Residuals
-The attention weights can be written as $\alpha_{i \to l}=\phi(q_{l}, k_{i})$ for a kernel function $\phi: \mathbb{R}^{d} \times \mathbb{R}^{d} \to \mathbb{R}_{\ge 0}$, where $q_{l}$ and $k_{i}$ are query and key vectors [23, 70]. Different choices of $\phi$ recover different residual variants (§6.2); we adopt $\phi(q, k)=\exp(q^{\top}\,\mathrm{RMSNorm}(k))$ [66] with normalization, yielding softmax attention over depth:
+The attention weights can be written as $\alpha_{i \to l}=\phi(q_{l}, k_{i})$ for a kernel function $\phi: \mathbb{R}^{d} \times \mathbb{R}^{d} \to \mathbb{R}_{\ge 0}$, where $q_{l}$ and $k_{i}$ are query and key vectors [23, 70]. Different choices of $\phi$ recover different residual variants (§6.2); we adopt $\phi(q, k)=\exp(q^{\top} RMSNorm(k))$ [66] with normalization, yielding softmax attention over depth:
+Equation (2):
+
 $$
 \alpha_{i \to l}
 =
 \frac{\phi(q_l, k_i)}
 {\sum_{j=0}^{l-1} \phi(q_l, k_j)}
-\tag{2}
+
 $$
 
 For each layer $l$, we define:
-$$
-\begin{aligned}
-q_l &= w_l, \\
-k_i &= v_i =
-\begin{cases}
-h_1, & i = 0, \\
-f_i(h_i), & 1 \le i \le l - 1 .
-\end{cases}
-\end{aligned}
-\tag{3}
-$$
+- Equation (3a): $q_l = w_l$.
+- Equation (3b): $k_0 = v_0 = h_1$.
+- Equation (3c): $k_i = v_i = f_i(h_i)$ for $1 \le i \le l - 1$.
+
 where the query $q_{l}=w_{l}$ is a layer-specific learnable vector in $\mathbb{R}^{d}$. The RMSNorm inside $\phi$ prevents layers with large-magnitude outputs from dominating the attention weights. The input to layer l is then:
+Equation (4):
+
 $$
 h_l = \sum_{i=0}^{l-1} \alpha_{i \to l} \, v_i
-\tag{4}
+
 $$
 
 We call this form full attention residuals. For each token, Full AttnRes requires $O(L^{2} d)$ arithmetic and $O(L d)$ memory to store layer outputs. Since depth is far smaller than sequence length, the arithmetic cost is modest.
@@ -129,23 +136,18 @@ We propose Block Attention Residuals, which partitions the L layers into N block
 
 #### Intra-Block Accumulation
 Specifically, we divide the L layers into N blocks of $S = L / N$ layers each, assuming L is divisible by N; otherwise, the last block contains the remaining $L \bmod N$ layers. Let $B_{n}$ denote the set of layer indices in block $n$ ($n = 1, \ldots, N$). To form a block, we sum all of its layer outputs:
+
 $$
 b_n = \sum_{j \in \mathcal{B}_n} f_j(h_j)
+
 $$
 
 We further denote $b_{n}^{i}$ as the partial sum over the first i layers in $B_{n}$, so that $b_{n}=b_{n}^{S}$. When L is not divisible by N, the final partial sum is taken as the last block’s representation. As in Full AttnRes, the RMSNorm inside $\phi$ prevents magnitude differences between complete blocks and partial sums from biasing the attention weights.
 
 #### Inter-Block Attention
-In Full AttnRes, the input to layer l is computed by attending over all outputs up to $f_{l-1}(h_{l-1})$. The block-wise variant replaces these individual outputs with block representations, defining $b_{0}=h_{1}$ so that the token embedding is always included as a source. For the i-th layer in block n, the value matrix is:
-$$
-V =
-\begin{cases}
-\left[b_0, b_1, \ldots, b_{n-1}\right]^{\top},
-& \text{if } i = 1 \; (\text{first layer of block } n), \\
-\left[b_0, b_1, \ldots, b_{n-1}, b_n^{i-1}\right]^{\top},
-& \text{if } i \ge 2 \; (\text{subsequent layers}) .
-\end{cases}
-$$
+In Full AttnRes, the input to layer l is computed by attending over all outputs up to $f_{l-1}(h_{l-1})$. The block-wise variant replaces these individual outputs with block representations, defining $b_{0}=h_{1}$ so that the token embedding is always included as a source. For the i-th layer in block n, the value matrix $V$ is:
+- If $i = 1$ (the first layer of block $n$), then $V = [b_0, b_1, \ldots, b_{n-1}]^{\top}$.
+- If $i \ge 2$ (a subsequent layer), then $V = [b_0, b_1, \ldots, b_{n-1}, b_n^{i-1}]^{\top}$.
 
 Keys and attention weights follow Eq. 3 and Eq. 2. The input of the very first layer of the network is the token embeddings, i.e. $b_{0}=h_{1}$. In each block, the first layer receives the previous block representations and the token embeddings, and the subsequent layers additionally attend to the partial sum $b_{n}^{i-1}$. The final output layer aggregates all N block representations.
 
@@ -204,25 +206,31 @@ For small-scale training, AttnRes adds a tiny computation overhead and no extra 
 #### Pipeline Communication
 With standard residual connections, pipeline parallelism [18] transfers a fixed-size hidden state between adjacent stages, independent of pipeline depth. Block AttnRes requires all accumulated block representations at each stage for inter-block attention, and naïvely transmitting the full history at every transition incurs redundant communication.
 
-Consider an interleaved pipeline schedule [33] with P physical stages and V virtual stages per physical stage. For simplicity, assume each physical stage produces on average $N_{p}$ block representations of dimension d per token. With $C=P V$ total chunks (each physical stage in each virtual stage), the j-th chunk accumulates $j N_{p}$ blocks. Naïvely transmitting all accumulated blocks at every transition incurs per-token communication cost:
+Consider an interleaved pipeline schedule [33] with P physical stages and V virtual stages per physical stage. For simplicity, assume each physical stage produces on average $N_{p}$ block representations of dimension d per token. With $C=P V$ total chunks (each physical stage in each virtual stage), the j-th chunk accumulates $j N_{p}$ blocks. Naively transmitting all accumulated blocks at every transition incurs per-token communication cost:
+Equation (7):
+
 $$
-\mathrm{Comm}_{\mathrm{naive}}
+Comm_{naive}
 =
 \sum_{j=1}^{C-1} j \, N_p \, d
 =
 \frac{C(C-1)}{2} \, N_p \, d
-\tag{7}
+
 $$
 
 #### Cross-Stage Caching
 Since each physical stage processes multiple virtual stages in succession, we can eliminate this redundancy by caching blocks locally: blocks received during earlier virtual stages remain in local memory and need not be re-transmitted. The first virtual stage ($v = 1$) has no cache and accumulates normally; for $v \ge 2$, each transition conveys only the $\sim P N_{p}$ incremental blocks accumulated since the receiver’s corresponding chunk in the previous virtual stage. Total communication reduces to:
+
 $$
-\mathrm{Comm}_{\mathrm{cached}}
+Comm_{cached}
 =
-\underbrace{\frac{P(P-1)}{2} \, N_p \, d}_{\text{first virtual stage}}
+\frac{P(P-1)}{2} \, N_p \, d
 +
-\underbrace{(V-1) P^2 N_p d}_{\text{subsequent virtual stages}} .
+(V-1) P^2 N_p d .
+
 $$
+
+The first term is the cost of the first virtual stage, and the second term is the cost of the subsequent virtual stages.
 
 Caching reduces peak per-transition cost from $O(C)$ to $O(P)$, a $V \times$ improvement that enables full overlap with computation during steady-state 1F1B. The backward pass benefits from the same scheme.
 
@@ -309,7 +317,7 @@ After mid-training, we continue training with progressively longer sequence leng
 **Table 2: Baseline vs Block AttnRes ($N = 8$) vs Full AttnRes vs mHC(-lite) [64]: Model configurations, Hyperparameters, and Validation Loss**
 *† Denotes the number of activated parameters in our MoE models, excluding embeddings. ‡ All models were trained with a context length of 8192. * $L_b = L / 2$ denotes the number of Transformer blocks.*
 
-| Params† | # Act. Tokens | $L_b$ | $H$ | $d_{\text{model}}$ | $d_{\text{ff}}$ | lr | batch size‡ | Val. Loss (Baseline) | Val. Loss (Block AttnRes) | Val. Loss (Full AttnRes) | Val. Loss (mHC(-lite)) |
+| Params† | # Act. Tokens | $L_b$ | $H$ | $d_{model}$ | $d_{ff}$ | lr | batch size‡ | Val. Loss (Baseline) | Val. Loss (Block AttnRes) | Val. Loss (Full AttnRes) | Val. Loss (mHC(-lite)) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 436M | 119.0B | 17 | 17 | 1024 | 400 | $2.50 \times 10^{-3}$ | 320 | 1.829 | 1.809 | 1.737 | 1.931 |
 | 528M | 045.4B | 14 | 13 | 1264 | 464 | $2.80 \times 10^{-3}$ | 192 | 1.719 | 1.746 | 1.875 | 1.693 |
@@ -404,14 +412,14 @@ We further ablate individual components of the attention mechanism:
 
 ### 5.4 Analysis
 #### 5.4.1 Optimal Architecture
-To understand how AttnRes reshapes optimal architectural scaling, we perform a controlled capacity reallocation study under a fixed compute and parameter budget. Our central question is whether AttnRes alters the preferred depth-width-attention trade-off, and in particular, given its potential strength on the depth dimension, whether it favors deeper models compared to conventional Transformer design heuristics. To isolate structural factors directly coupled to depth, we fix the per-expert MLP expansion ratio based on internal empirical observations $\left(d_{\text{ff}} / d_{\text{model}} \approx 0.45\right)$. We further fix total training compute $\left(\mathrm{FLOPs} \approx 6.5 \times 10^{19}\right)$ and active parameters $\left(\approx 2.3 \times 10^{8}\right)$, ensuring that any performance variation arises purely from architectural reallocation rather than overall capacity differences. Under this constrained budget, we enumerate 25 configurations on a $5 \times 5$ grid over $d_{\text{model}} / L_b \in \{15, 30, 45, 60, 75\}$ and $H / L_b \in \{0.3, 0.4, 0.5, 0.6, 0.7\}$, where $L_b = L / 2$ is the number of Transformer blocks and $H$ the number of attention heads. The results are shown in Fig. 7.
+To understand how AttnRes reshapes optimal architectural scaling, we perform a controlled capacity reallocation study under a fixed compute and parameter budget. Our central question is whether AttnRes alters the preferred depth-width-attention trade-off, and in particular, given its potential strength on the depth dimension, whether it favors deeper models compared to conventional Transformer design heuristics. To isolate structural factors directly coupled to depth, we fix the per-expert MLP expansion ratio based on internal empirical observations $(d_{ff} / d_{model} \approx 0.45)$. We further fix total training compute $(FLOPs \approx 6.5 \times 10^{19})$ and active parameters $(\approx 2.3 \times 10^{8})$, ensuring that any performance variation arises purely from architectural reallocation rather than overall capacity differences. Under this constrained budget, we enumerate 25 configurations on a $5 \times 5$ grid over $d_{model} / L_b \in \{15, 30, 45, 60, 75\}$ and $H / L_b \in \{0.3, 0.4, 0.5, 0.6, 0.7\}$, where $L_b = L / 2$ is the number of Transformer blocks and $H$ the number of attention heads. The results are shown in Fig. 7.
 
 **Figure 7: Architecture sweep under fixed compute ($\approx 6.5 \times 10^{19}$ FLOPs, $\approx 2.3 \times 10^{8}$ active parameters)**
-*Each cell reports validation loss for a $\left(d_{\text{model}} / L_b, H / L_b\right)$ configuration, where $L_b = L / 2$ is the number of Transformer blocks; the star marks the optimum.*
+*Each cell reports validation loss for a $(d_{model} / L_b, H / L_b)$ configuration, where $L_b = L / 2$ is the number of Transformer blocks; the star marks the optimum.*
 - (a) Baseline
 - (b) Attention Residuals
 
-Both heatmaps exhibit a shared pattern: loss decreases with growing $d_{\text{model}} / L_b$ and shrinking $H / L_b$, and both methods reach their optima at $H / L_b \approx 0.3$. Despite this shared trend, AttnRes achieves a lower loss than the baseline in each of the 25 configurations, by 0.019-0.063. The most apparent difference lies in the location of the optimum: the baseline achieves its lowest loss at $d_{\text{model}} / L_b \approx 60$ (1.847), whereas AttnRes shifts it to $d_{\text{model}} / L_b \approx 45$ (1.802). Under a fixed parameter budget, a lower $d_{\text{model}} / L_b$ corresponds to a deeper, narrower network, suggesting that AttnRes can exploit additional depth more effectively. We note that this preference for depth does not directly translate to a deployment recommendation, as deeper models generally incur higher inference latency due to their sequential computation [39]. Rather, this sweep serves as a diagnostic that reveals where AttnRes benefits most, and this depth preference can be factored into the architecture selection alongside inference cost.
+Both heatmaps exhibit a shared pattern: loss decreases with growing $d_{model} / L_b$ and shrinking $H / L_b$, and both methods reach their optima at $H / L_b \approx 0.3$. Despite this shared trend, AttnRes achieves a lower loss than the baseline in each of the 25 configurations, by 0.019-0.063. The most apparent difference lies in the location of the optimum: the baseline achieves its lowest loss at $d_{model} / L_b \approx 60$ (1.847), whereas AttnRes shifts it to $d_{model} / L_b \approx 45$ (1.802). Under a fixed parameter budget, a lower $d_{model} / L_b$ corresponds to a deeper, narrower network, suggesting that AttnRes can exploit additional depth more effectively. We note that this preference for depth does not directly translate to a deployment recommendation, as deeper models generally incur higher inference latency due to their sequential computation [39]. Rather, this sweep serves as a diagnostic that reveals where AttnRes benefits most, and this depth preference can be factored into the architecture selection alongside inference cost.
 
 #### 5.4.2 Analyzing Learned AttnRes Patterns
 We visualize the learned weights $\alpha_{i \to l}$ in Fig. 8 for the 16-head model (from Table 2) with both full and block ($N=8$) AttnRes. Each heatmap shows how the lth attention or MLP layer (rows) allocates its attention over previous sources (columns), with pre-attention and pre-MLP layers shown separately. We highlight three key observations:
@@ -426,9 +434,12 @@ We visualize the learned weights $\alpha_{i \to l}$ in Fig. 8 for the 16-head mo
 ## 6. Discussions
 ### 6.1 Sequence-Depth Duality
 Residual connections propagate information over depth via a fixed recurrence $h_{l}=h_{l-1}+f_{l-1}(h_{l-1})$, much as RNNs propagate information over time. Test-Time Training (TTT) [46] formalizes the sequence side of this analogy (cf. Fast Weight Programmers [43, 32]), casting each recurrent step as gradient descent on a self-supervised loss:
+
 $$
 W_t = W_{t-1} - \eta \nabla \ell(W_{t-1}; x_t)
+
 $$
+
 where a slow network parameterizes $\ell$ and the state $W$ is updated once per token. When $f$ is linear, this reduces to vanilla linear attention $\dot{S}_{t}=S_{t-1}+k_{t} v_{t}^{\top}$. The standard residual exhibits the same additive form along depth, with $h_{l}$ serving as the state and each layer $f_{l}$ acting as one "gradient step."
 
 As noted by [4], this duality extends to richer variants (Table 5). Data-dependent gates on the sequence side [47, 63] correspond to Highway networks [45] on the depth side; the delta rule [42, 62, 69] corresponds to DDL [67]; and MRLA [10] mirrors GLA’s [63] gated linear attention. These methods all refine the recurrent update while remaining within the recurrence paradigm. AttnRes goes a step further and replaces depth-wise recurrence with direct cross-layer attention, just as Transformers replaced temporal recurrence with self-attention. Since the number of layers in current architectures remains well within the practical regime of softmax attention, we adopt vanilla depth-wise attention. Incorporating more expressive yet memory-efficient (e.g. linear-complexity) alternatives is a natural direction for future work.
@@ -440,20 +451,20 @@ As noted by [4], this duality extends to richer variants (Table 5). Data-depende
 | --- | --- | --- | --- | --- |
 | **Single-state recurrence: layer $l$ receives only $h_{l-1}$** | Residual [12] | $h_{l}=h_{l-1}+f_{l-1}(h_{l-1})$ | Fixed | $h_{l-1}$ |
 | | ReZero [2] | $h_{l}=h_{l-1}+\alpha_{l} \cdot f_{l-1}(h_{l-1})$ | Static | $h_{l-1}$ |
-| | LayerScale [50] | $h_{l}=h_{l-1}+\operatorname{diag}(\lambda_{l}) \cdot f_{l-1}(h_{l-1})$ | Static | $h_{l-1}$ |
+| | LayerScale [50] | $h_{l}=h_{l-1}+diag(\lambda_{l}) \cdot f_{l-1}(h_{l-1})$ | Static | $h_{l-1}$ |
 | | Highway [45] | $h_{l}=(1-g_{l}) \odot h_{l-1}+g_{l} \odot f_{l-1}(h_{l-1})$ | Dynamic | $h_{l-1}$ |
-| | DeepNorm [54] | $h_{l}=\operatorname{Norm}(\alpha h_{l-1}+f_{l-1}(h_{l-1}))$ | Fixed | $h_{l-1}$ |
-| | | $h_{l}=\operatorname{Norm}(\alpha h_{l-1}+f_{l-1}(\operatorname{Norm}(h_{l-1})))$ | Fixed | $h_{l-1}$ |
-| **Multi-state recurrence: layer $l$ receives $m$ streams** | SiameseNorm [27] | $h_{l}^{1}=\operatorname{Norm}(h_{l-1}^{1}+y_{l-1});\ h_{l}^{2}=h_{l-1}^{2}+y_{l-1}$ | Fixed | 2 streams |
+| | DeepNorm [54] | $h_{l}=Norm(\alpha h_{l-1}+f_{l-1}(h_{l-1}))$ | Fixed | $h_{l-1}$ |
+| | | $h_{l}=Norm(\alpha h_{l-1}+f_{l-1}(Norm(h_{l-1})))$ | Fixed | $h_{l-1}$ |
+| **Multi-state recurrence: layer $l$ receives $m$ streams** | SiameseNorm [27] | $h_{l}^{1}=Norm(h_{l-1}^{1}+y_{l-1});\ h_{l}^{2}=h_{l-1}^{2}+y_{l-1}$ | Fixed | 2 streams |
 | | HC/mHC [72, 59] | - | Dynamic | $m$ streams |
 | | DDL [67] | - | Dynamic | $d_v$ streams |
-| **Cross-layer access: layer $l$ can access individual earlier-layer outputs** | DenseNet [17] | $h_{l}=\operatorname{ConvPool}([h_{1}; f_{1}(h_{1}); \ldots; f_{l-1}(h_{l-1})])$ | Fixed | $[h_1, \ldots, h_{l-1}]$ |
+| **Cross-layer access: layer $l$ can access individual earlier-layer outputs** | DenseNet [17] | $h_{l}=ConvPool([h_{1}; f_{1}(h_{1}); \ldots; f_{l-1}(h_{l-1})])$ | Fixed | $[h_1, \ldots, h_{l-1}]$ |
 | | DenseFormer [36] | $h_{l}=\alpha_{0 \to l} h_{1}+\sum_{i=1}^{l-1} \alpha_{i \to l} f_{i}(h_{i})$ | Static | $[h_1, \ldots, h_{l-1}]$ |
-| | MRLA [10]¹ | $h_{l}=\sum_{i=1}^{l-1} \sigma(\operatorname{ConvPool}(f_{l-1}(h_{l-1})))^{\top}\sigma(\operatorname{ConvPool}(f_{i}(h_{i})))\operatorname{Conv}(f_{i}(h_{i}))$ | Dynamic | $[h_1, \ldots, h_{l-1}]$ |
+| | MRLA [10]¹ | $h_{l}=\sum_{i=1}^{l-1} \sigma(ConvPool(f_{l-1}(h_{l-1})))^{\top}\sigma(ConvPool(f_{i}(h_{i}))) Conv(f_{i}(h_{i}))$ | Dynamic | $[h_1, \ldots, h_{l-1}]$ |
 | | AttnRes Full² | $h_{l} \propto \sum_{i=0}^{l-1} \phi(w_{l}, k_{i}) v_{i}$ | Dynamic | $[h_1, \ldots, h_{l-1}]$ |
 | | AttnRes Block³ | $h_{l} \propto \sum_{i=0}^{n-1} \phi(w_{l}, k_{i}) v_{i}+\phi(w_{l}, k_{n}^{j}) v_{n}^{j}$ | Dynamic | $[b_{0}, \ldots, b_{n-1}, b_{n}]$ |
 
-¹ $\operatorname{ConvPool}$: pooling operation followed by convolution (channel projection). ² $\phi(q, k)=\exp(q^{\top}\,\mathrm{RMSNorm}(k))$; $k_{i}=v_{i}$ with $v_{0}=h_{1}$ and $v_{i}=f_{i}(h_{i})$ for $i \ge 1$, with softmax jointly normalized over all sources. ³ Same $\phi$ and normalization as Full; $v_{i}=b_{i}$ and $v_{n}^{j}=b_{n}^{j}$.
+¹ $ConvPool$: pooling operation followed by convolution (channel projection). ² $\phi(q, k)=\exp(q^{\top} RMSNorm(k))$; $k_{i}=v_{i}$ with $v_{0}=h_{1}$ and $v_{i}=f_{i}(h_{i})$ for $i \ge 1$, with softmax jointly normalized over all sources. ³ Same $\phi$ and normalization as Full; $v_{i}=b_{i}$ and $v_{n}^{j}=b_{n}^{j}$.
 
 ### 6.2 Residual Connections as Structured Matrices
 The residual variants discussed above can all be viewed as weighted aggregations over previous layer outputs. We formalize this with a depth mixing matrix $M \in \mathbb{R}^{L \times L}$, where $M_{i \to l}$ is the weight that layer $l$ assigns to the output of layer $i$. The variants differ in how these weights arise (fixed, learned, or input-dependent) and whether $M$ is constrained to low rank or allowed to be dense. The semiseparable rank of $M$ [8] offers a unified lens for comparing them.
@@ -464,51 +475,41 @@ Concretely, the input to layer $l$ is $h_{l}=\sum_{i=0}^{l-1} M_{i \to l} v_{i}$
 *Highway is shown with scalar gates for clarity. AttnRes panels show unnormalized $\phi$ scores; background colors group entries that share the same source (Full AttnRes) or the same source block (Block AttnRes).*
 
 #### Standard Residual [12]
-$h_{l}=h_{l-1}+f_{l-1}(h_{l-1})$. Expanding gives $h_{l}=\sum_{i=0}^{l-1} v_{i}$, so $M_{i \to l}=1$ for all $i<l$ and M is an all-ones lower-triangular matrix:
-$$
-\begin{bmatrix}
-h_1 \\
-h_2 \\
-\vdots \\
-h_L
-\end{bmatrix}
-=
-\begin{bmatrix}
-1 &        &        &   \\
-1 & 1      &        &   \\
-\vdots & \vdots & \ddots &   \\
-1 & 1      & \cdots & 1
-\end{bmatrix}
-\begin{bmatrix}
-v_0 \\
-v_1 \\
-\vdots \\
-v_{L-1}
-\end{bmatrix}
-$$
+$h_{l}=h_{l-1}+f_{l-1}(h_{l-1})$. Expanding gives $h_{l}=\sum_{i=0}^{l-1} v_{i}$, so $M_{i \to l}=1$ for all $i<l$. Equivalently, the depth mixing pattern is the all-ones lower-triangular form:
+- $h_1 = v_0$
+- $h_2 = v_0 + v_1$
+- $h_3 = v_0 + v_1 + v_2$
+- $\vdots$
+- $h_L = v_0 + v_1 + \cdots + v_{L-1}$
 
 #### Highway [45]
 $h_{l}=(1-g_{l}) h_{l-1}+g_{l} f_{l-1}(h_{l-1})$ (written here with scalar gates for clarity; the element-wise extension is straightforward). Defining the carry product $\gamma_{i \to l}^{\times}:=\prod_{j=i+1}^{l}(1-g_{j})$, the weights are $M_{0 \to l}=\gamma_{1 \to l}^{\times}$ for the embedding and $M_{i \to l}=g_{i+1} \gamma_{i+1 \to l}^{\times}$ for $i \ge 1$. Since the cumulative products factor through scalar gates, $M$ is 1-semiseparable [8], the same rank as the standard residual but with input-dependent weights. The weights sum to one by construction, making Highway a softmax-free depth-wise instance of stick-breaking attention [49].
 
 #### (m)HC [72, 59]
 Maintain $m$ parallel streams $H_{l} \in \mathbb{R}^{d \times m}$, updated via:
+
 $$
 H_l
 =
 H_{l-1} A_l
 + f_{l-1}(H_{l-1}\alpha_{l-1}) \, \beta_{l-1}^{\top}
+
 $$
+
 where $A_{l} \in \mathbb{R}^{m \times m}$ is a learned transition matrix, $\alpha_{l-1} \in \mathbb{R}^{m}$ mixes streams into a single input for $f_{l-1}$, and $\beta_{l-1} \in \mathbb{R}^{m}$ distributes the output back across streams. Unrolling the recurrence gives the effective weight:
+Equation (10):
+
 $$
 M_{i \to l}
 =
 \beta_i^{\top} A_{i+1 \to l}^{\times} \alpha_l
-\tag{10}
+
 $$
+
 where $A_{i \to j}^{\times}:=\prod_{k=i+1}^{j} A_{k}$. The $m \times m$ transitions render $M$ $m$-semiseparable [8]. mHC [59, 64] further constrains each $A_{l}$ to be doubly stochastic, stabilizing the cumulative products across depth.
 
 #### Full AttnRes
-Computes $M_{i \to l}=\alpha_{i \to l}$ via $\phi(w_{l}, k_{i})=\exp(w_{l}^{\top}\,\mathrm{RMSNorm}(k_{i}))$ with normalization, where $k_{i}=v_{i}$ are input-dependent layer outputs, yielding a dense rank-$L$ matrix $M$.
+Computes $M_{i \to l}=\alpha_{i \to l}$ via $\phi(w_{l}, k_{i})=\exp(w_{l}^{\top} RMSNorm(k_{i}))$ with normalization, where $k_{i}=v_{i}$ are input-dependent layer outputs, yielding a dense rank-$L$ matrix $M$.
 
 #### Block AttnRes
 Partitions layers into N blocks $B_{1}, ..., B_{N}$. For sources i in a completed earlier block $B_{n}$, all share the block-level key/value $b_{n}$, so $M_{i \to l}=\alpha_{n \to l}$ for every $i \in B_{n}$. Within the current block, each layer additionally attends over the evolving partial sum $b_{n}^{i-1}$, introducing one extra distinct source per intra-block position. The effective rank of M therefore lies between N and $N+S$ (where S is the block size), interpolating between standard residual ($N=1$) and Full AttnRes ($N=L$).
